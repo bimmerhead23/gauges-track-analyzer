@@ -1,0 +1,10 @@
+**/node_modules
+**/dist
+**/.venv
+**/__pycache__
+**/.git
+**/data
+**/*.parquet
+desktop
+docs
+.git

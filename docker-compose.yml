@@ -1,0 +1,25 @@
+# One service: UI + API + SQLite. Open http://localhost:8090
+services:
+  gauges:
+    build: .
+    image: gauges-track-analyzer:latest
+    container_name: gauges
+    restart: unless-stopped
+    ports:
+      - "8090:8090"
+    environment:
+      DATA_DIR: /data
+      GAUGES_UI_DIR: /app/ui
+      XAI_API_KEY: ${XAI_API_KEY:-}
+      GROQ_API_KEY: ${GROQ_API_KEY:-}
+      META_API_KEY: ${META_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      COACH_API_KEY: ${COACH_API_KEY:-}
+      COACH_BASE_URL: ${COACH_BASE_URL:-}
+      COACH_PROVIDER: ${COACH_PROVIDER:-xai}
+      COACH_MODEL: ${COACH_MODEL:-grok-4.6}
+    volumes:
+      - gaugedata:/data
+
+volumes:
+  gaugedata:

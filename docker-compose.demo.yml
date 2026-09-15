@@ -1,0 +1,47 @@
+# Public demo: same image as production, isolated network, no Docker socket,
+# no extra capabilities. Pair with scripts/isolate-demo-net.sh on the host.
+# Does not join production or other compose networks.
+
+services:
+  gauges-demo:
+    image: gauges-track-analyzer:latest
+    build: .
+    container_name: gauges-demo
+    restart: unless-stopped
+    init: true
+    read_only: true
+    tmpfs:
+      - /tmp:size=256m,mode=1777
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    pids_limit: 256
+    mem_limit: 2g
+    environment:
+      DATA_DIR: /data
+      GAUGES_UI_DIR: /app/ui
+      GAUGES_DEMO: "1"
+    volumes:
+      - demo-data:/data
+    ports:
+      - "8091:8090"
+    dns:
+      - 1.1.1.1
+      - 8.8.8.8
+    networks:
+      demo:
+        ipv4_address: 172.30.99.10
+
+networks:
+  demo:
+    name: gauges-demo
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.30.99.0/24
+    driver_opts:
+      com.docker.network.bridge.name: br-gauges-demo
+
+volumes:
+  demo-data:

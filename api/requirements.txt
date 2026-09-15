@@ -1,0 +1,14 @@
+fastapi==0.115.12
+uvicorn[standard]==0.34.2
+sqlalchemy==2.0.40
+psycopg[binary]==3.2.6
+python-multipart==0.0.31
+pandas==2.2.3
+pyarrow==23.0.1
+numpy==2.2.4
+scipy==1.15.2
+shapely==2.0.7
+numexpr==2.10.2
+pydantic==2.11.3
+python-dateutil==2.9.0.post0
+openai==1.82.0
