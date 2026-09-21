@@ -59,6 +59,9 @@ _HEADER_ALIASES = {
     "coolant temp f": "coolant",
     "oil temp f": "oil_temp",
     "oil pressure psi": "oil_psi",
+    "oil pressure": "oil_psi",
+    "engine speed": "rpm",
+    "engine speed rpm": "rpm",
     "brake pressure": "brake",
     "diff temp f": "diff_temp",
 }
@@ -164,8 +167,8 @@ _RULES: tuple[_Rule, ...] = (
     _Rule("hour", need=(("hour",),), weight=15),
     _Rule("minute", need=(("minute",),), weight=15),
     _Rule("second", need=(("second",),), ban=("time", "timestamp"), weight=10),
-    _Rule("rpm", need=(("rpm",),), ban=("gps",), weight=30),
-    _Rule("rpm", need=(("engine",), ("speed",)), ban=("gps",), weight=20),
+    _Rule("rpm", need=(("engine",), ("speed",)), ban=("gps",), weight=32),
+    _Rule("rpm", need=(("rpm",),), ban=("gps", "oil", "p"), weight=30),
     _Rule("tps", need=(("tps",),), weight=30),
     _Rule("tps", need=(("throttle",),), weight=25),
     _Rule("brake", need=(("brake",),), weight=25),
@@ -222,23 +225,153 @@ def _rule_score(rule: _Rule, toks: set[str]) -> int:
     return rule.weight + extra
 
 
+TEMP_KEYS = ("iat", "coolant", "oil_temp", "diff_temp")
+PRESS_KEYS = ("oil_psi",)
+SPEED_KEYS = ("gps_speed", "gps_speed_mph", "speed_mph")
+TEMP_HINT = {"temp", "oil", "coolant", "iat", "intake", "diff", "air"}
+
+
+def canon_unit(unit: str | None) -> str | None:
+    if not unit:
+        return None
+    key = re.sub(r"[^a-z0-9]+", "", str(unit).strip().lower())
+    return {
+        "c": "°C",
+        "degc": "°C",
+        "celsius": "°C",
+        "f": "°F",
+        "degf": "°F",
+        "fahrenheit": "°F",
+        "psi": "psi",
+        "kpa": "kPa",
+        "bar": "bar",
+        "mph": "mph",
+        "kmh": "km/h",
+        "kph": "km/h",
+        "ms": "ms",
+        "s": "s",
+    }.get(key, str(unit).strip() or None)
+
+
 def infer_unit(header: str) -> str | None:
-    """Best-effort unit from a raw header (mph vs km/h, seconds vs ms)."""
+    """Best-effort unit from a raw header (mph vs km/h, °C vs °F, kPa vs psi)."""
     toks = set(_tokens(header))
     joined = " ".join(_tokens(header))
+    if toks & {"celsius", "degc"} or ("c" in toks and toks & TEMP_HINT):
+        return "°C"
+    if toks & {"fahrenheit", "degf"} or ("f" in toks and toks & TEMP_HINT):
+        return "°F"
+    if "kpa" in toks:
+        return "kPa"
+    if "bar" in toks:
+        return "bar"
+    if "psi" in toks:
+        return "psi"
     if "mph" in toks:
         return "mph"
     if "kmh" in toks or joined.endswith("km h") or " km h" in f" {joined} ":
-        return "kmh"
+        return "km/h"
     if "ms" in toks:
         return "ms"
     if toks & {"s", "sec", "secs"} and "ms" not in toks and "timestamp" not in toks:
-        # "Time (s)" but not "Second (s)" of day — caller keys this per channel.
         if "time" in toks or "timestamp" in toks:
             return "s"
     if "timestamp" in toks:
         return "ms"
     return None
+
+
+def _finite_stats(series) -> tuple[float, float, float] | None:
+    import numpy as np
+
+    v = np.asarray(series, dtype=float)
+    v = v[np.isfinite(v)]
+    if v.size < 30:
+        return None
+    return float(np.min(v)), float(np.median(v)), float(np.max(v))
+
+
+def detect_stored_units(df, header_units: dict | None = None) -> dict[str, str]:
+    """Native units of columns in *df*.
+
+    Named headers win. Empty Gauge.S labels like ``Oil temperature ()``
+    fall back to ranges: 90 oil is °C, 330 pressure is kPa, 210 GPS is km/h.
+    """
+    out: dict[str, str] = {}
+    for k, u in (header_units or {}).items():
+        cu = canon_unit(u)
+        if cu:
+            out[str(k)] = cu
+
+    cols = set(getattr(df, "columns", []))
+    temp_c = temp_f = 0
+    for k in TEMP_KEYS:
+        if k not in cols:
+            continue
+        if k in out:
+            if out[k] == "°C":
+                temp_c += 2
+            elif out[k] == "°F":
+                temp_f += 2
+            continue
+        st = _finite_stats(df[k])
+        if not st:
+            continue
+        _mn, med, mx = st
+        if mx < 130 and med < 115:
+            out[k] = "°C"
+            temp_c += 1
+        elif med > 130 or mx > 155:
+            out[k] = "°F"
+            temp_f += 1
+    majority = "°C" if temp_c > temp_f else "°F" if temp_f > temp_c else None
+    if majority:
+        for k in TEMP_KEYS:
+            if k in cols and not canon_unit((header_units or {}).get(k)):
+                out[k] = majority
+
+    for k in PRESS_KEYS:
+        if k not in cols or k in out:
+            continue
+        st = _finite_stats(df[k])
+        if not st:
+            continue
+        _mn, med, mx = st
+        if mx > 150:
+            out[k] = "kPa"
+        elif mx <= 16 and med <= 10:
+            out[k] = "bar"
+        else:
+            out[k] = "psi"
+
+    gps_st = _finite_stats(df["gps_speed"]) if "gps_speed" in cols else None
+    mph_st = _finite_stats(df["gps_speed_mph"]) if "gps_speed_mph" in cols else None
+    wheel_st = _finite_stats(df["speed_mph"]) if "speed_mph" in cols else None
+
+    if gps_st and mph_st and gps_st[2] > mph_st[2] * 1.15:
+        out["gps_speed"] = "km/h"
+        out["gps_speed_mph"] = "mph"
+    else:
+        if "gps_speed_mph" in cols:
+            out.setdefault("gps_speed_mph", "mph")
+        if gps_st and "gps_speed" not in out:
+            if gps_st[2] > 160 or majority == "°C":
+                out["gps_speed"] = "km/h"
+            elif majority == "°F" or gps_st[2] <= 140:
+                out["gps_speed"] = "mph"
+            else:
+                out["gps_speed"] = "km/h"
+
+    if wheel_st and "speed_mph" not in out:
+        gps_max = (gps_st or (0.0, 0.0, 0.0))[2]
+        if gps_max > 20 and abs(wheel_st[2] - gps_max) / gps_max < 0.25:
+            out["speed_mph"] = out.get("gps_speed") or "km/h"
+        elif wheel_st[2] > 160 or majority == "°C":
+            out["speed_mph"] = "km/h"
+        else:
+            out["speed_mph"] = "mph"
+
+    return out
 
 
 def _slug(name: str) -> str:
@@ -306,6 +439,9 @@ DISPLAY = {
     "accel_z": ("Accel Z", "g"),
     "gps_long_g": ("Long G (GPS)", "g"),
     "gps_lat_g": ("Lat G (GPS)", "g"),
+    "long_g": ("Long G", "g"),
+    "lat_g": ("Lat G", "g"),
+    "wheel_speed_mph": ("Wheel speed", "mph"),
     "heading_deg": ("Heading", "°"),
     "gps_heading": ("GPS Heading", "°"),
     "iat": ("Intake Temp", "°F"),
@@ -340,6 +476,7 @@ ALIASES = {
 }
 
 
-def display_meta(key: str) -> dict:
-    name, unit = DISPLAY.get(key, (key.replace("_", " ").title(), ""))
-    return {"key": key, "name": name, "unit": unit}
+def display_meta(key: str, unit: str | None = None) -> dict:
+    name, default_u = DISPLAY.get(key, (key.replace("_", " ").title(), ""))
+    u = canon_unit(unit) or default_u
+    return {"key": key, "name": name, "unit": u}

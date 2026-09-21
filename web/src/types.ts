@@ -18,6 +18,8 @@ export type Layout = {
   centroid_lat: number;
   centroid_lon: number;
   sf_gate: Gate | null;
+  finish_gate: Gate | null;
+  timing_mode: "loop" | "stage";
   sectors: Gate[];
   pit_polygon: { lat: number; lon: number }[] | null;
   turns?: { count?: number; source?: string; names?: Record<string, string>; complexes?: { turns: number[]; name: string }[] };
@@ -36,6 +38,7 @@ export type Lap = {
   time_ms: number;
   distance_m: number;
   kind: string;
+  sectors_source?: string;
   is_best: boolean;
   sectors?: Sector[];
 };
@@ -76,6 +79,7 @@ export type Session = {
     mapColor?: string;
     gatePreset?: string;
     gates?: { channel: string; op: string; value: number }[];
+    units?: "metric" | "imperial";
   };
   has_original?: boolean;
   channels: Channel[];

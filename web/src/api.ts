@@ -73,22 +73,43 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ kind }),
     }),
-  traces: (lapIds: number[], channels: string[]) =>
-    req(`/api/traces?lap_ids=${lapIds.join(",")}&channels=${channels.join(",")}`),
-  cursor: (lapIds: number[], dist: number, channels: string[]) =>
-    req(`/api/cursor?lap_ids=${lapIds.join(",")}&dist_m=${dist}&channels=${channels.join(",")}`),
-  ab: (lapIds: number[], distA: number, distB: number, channels: string[]) => {
+  traces: (lapIds: number[], channels: string[], refLapId?: number | null) => {
+    const q = new URLSearchParams({ lap_ids: lapIds.join(","), channels: channels.join(",") });
+    if (refLapId) q.set("ref_lap_id", String(refLapId));
+    return req<any[]>(`/api/traces?${q.toString()}`);
+  },
+  cursor: (lapIds: number[], dist: number, channels: string[], refLapId?: number | null) => {
+    const q = new URLSearchParams({
+      lap_ids: lapIds.join(","),
+      dist_m: String(dist),
+      channels: channels.join(","),
+    });
+    if (refLapId) q.set("ref_lap_id", String(refLapId));
+    return req(`/api/cursor?${q.toString()}`);
+  },
+  ab: (lapIds: number[], distA: number, distB: number, channels: string[], refLapId?: number | null) => {
     const q = new URLSearchParams({
       lap_ids: lapIds.join(","),
       dist_a: String(distA),
       dist_b: String(distB),
       channels: channels.join(","),
     });
+    if (refLapId) q.set("ref_lap_id", String(refLapId));
     return req(`/api/ab?${q.toString()}`);
   },
   delta: (ref: number, lapIds: number[]) =>
     req(`/api/delta?ref_lap_id=${ref}&lap_ids=${lapIds.join(",")}`),
-  map: (lapIds: number[]) => req(`/api/map?lap_ids=${lapIds.join(",")}`),
+  map: (lapIds: number[], refLapId?: number | null) => {
+    const q = new URLSearchParams({ lap_ids: lapIds.join(",") });
+    if (refLapId) q.set("ref_lap_id", String(refLapId));
+    return req<{ laps: any[]; turns: { n: number; apex_m: number; d0_m: number; d1_m: number; name?: string | null }[] }>(
+      `/api/map?${q.toString()}`,
+    );
+  },
+  mechanical: (lapIds: number[]) =>
+    req<{ laps: { lap_id: number; number: number; items: { key: string; label: string; value: number; unit: string; flag: string }[] }[] }>(
+      `/api/mechanical?lap_ids=${lapIds.join(",")}`,
+    ),
   download: async (url: string, filename: string) => {
     const r = await fetch(url);
     if (!r.ok) {
@@ -133,18 +154,19 @@ export const api = {
     lapIds: number[],
     x: string,
     y: string,
-    opts?: { gates?: string; distMin?: number; distMax?: number },
+    opts?: { gates?: string; distMin?: number; distMax?: number; refLapId?: number | null },
   ) => {
     const q = new URLSearchParams({ lap_ids: lapIds.join(","), x, y });
     if (opts?.gates) q.set("gates", opts.gates);
     if (opts?.distMin != null) q.set("dist_min", String(opts.distMin));
     if (opts?.distMax != null) q.set("dist_max", String(opts.distMax));
+    if (opts?.refLapId) q.set("ref_lap_id", String(opts.refLapId));
     return req(`/api/scatter?${q.toString()}`);
   },
   histogram: (
     lapIds: number[],
     channel: string,
-    opts?: { bins?: number; distMin?: number; distMax?: number; threshold?: number | null; gates?: string },
+    opts?: { bins?: number; distMin?: number; distMax?: number; threshold?: number | null; gates?: string; refLapId?: number | null },
   ) => {
     const q = new URLSearchParams({
       lap_ids: lapIds.join(","),
@@ -155,13 +177,15 @@ export const api = {
     if (opts?.distMax != null) q.set("dist_max", String(opts.distMax));
     if (opts?.threshold != null && Number.isFinite(opts.threshold)) q.set("threshold", String(opts.threshold));
     if (opts?.gates) q.set("gates", opts.gates);
+    if (opts?.refLapId) q.set("ref_lap_id", String(opts.refLapId));
     return req(`/api/histogram?${q.toString()}`);
   },
-  afrMap: (lapIds: number[], opts?: { gates?: string; distMin?: number; distMax?: number }) => {
+  afrMap: (lapIds: number[], opts?: { gates?: string; distMin?: number; distMax?: number; refLapId?: number | null }) => {
     const q = new URLSearchParams({ lap_ids: lapIds.join(",") });
     if (opts?.gates) q.set("gates", opts.gates);
     if (opts?.distMin != null) q.set("dist_min", String(opts.distMin));
     if (opts?.distMax != null) q.set("dist_max", String(opts.distMax));
+    if (opts?.refLapId) q.set("ref_lap_id", String(opts.refLapId));
     return req(`/api/afr-map?${q.toString()}`);
   },
   coachStatus: () => req<{ ok: boolean; reason: string; provider: string; model: string }>("/api/coach/status"),

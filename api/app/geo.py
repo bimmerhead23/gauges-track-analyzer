@@ -121,6 +121,40 @@ def polygon_from_ll(points: Iterable[dict], lat0: float, lon0: float) -> Polygon
     return Polygon(xy)
 
 
+def accept_gps(
+    lat: np.ndarray,
+    lon: np.ndarray,
+    valid: np.ndarray,
+    t_ms: np.ndarray | None = None,
+) -> np.ndarray:
+    """Drop teleports. A real gap is a short chord; a bad fix jumps faster than any car.
+
+    120 m/s is 432 km/h, plus 8 m of jitter. The rejected point is not used as the
+    next anchor, so the following good fix is measured from the last sane one.
+    """
+    keep = np.asarray(valid, dtype=bool).copy()
+    last = None
+    for i in range(len(lat)):
+        if not keep[i]:
+            continue
+        if last is None:
+            last = i
+            continue
+        step = float(haversine_m(lat[last], lon[last], lat[i], lon[i]))
+        dt = None
+        if t_ms is not None:
+            dt = (float(t_ms[i]) - float(t_ms[last])) / 1000.0
+        if dt is None or dt <= 0:
+            limit = 30.0
+        else:
+            limit = max(20.0, 120.0 * dt + 8.0)
+        if step > limit:
+            keep[i] = False
+            continue
+        last = i
+    return keep
+
+
 def cumulative_distance(lat: np.ndarray, lon: np.ndarray, valid: np.ndarray) -> np.ndarray:
     n = len(lat)
     dist = np.zeros(n, dtype=float)
@@ -186,9 +220,19 @@ def gps_accel_g(
     dhdg = np.diff(unwrap, prepend=unwrap[0])
     yaw_rate = dhdg / dt
     lat_g = -(speed_mps * yaw_rate) / 9.80665
-    long_g = np.clip(np.nan_to_num(long_g), -6, 6)
-    lat_g = np.clip(np.nan_to_num(lat_g), -6, 6)
+    long_g = _box_smooth(np.nan_to_num(long_g), 5)
+    lat_g = _box_smooth(np.nan_to_num(lat_g), 5)
+    long_g = np.clip(long_g, -6, 6)
+    lat_g = np.clip(lat_g, -6, 6)
     return long_g, lat_g
+
+
+def _box_smooth(x: np.ndarray, win: int) -> np.ndarray:
+    """Centered moving average. At ~14 Hz, 5 samples is about a quarter second."""
+    if win <= 1 or len(x) < win:
+        return x
+    kernel = np.ones(win, dtype=float) / win
+    return np.convolve(x, kernel, mode="same")
 
 
 def signed_area(lat: np.ndarray, lon: np.ndarray) -> float:

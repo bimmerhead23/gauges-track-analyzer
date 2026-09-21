@@ -191,7 +191,8 @@ export default function Library() {
           const next = new Set(kept);
           for (const s of ss) {
             const flying = (s.laps || []).filter((l) => l.kind === "valid").map((l) => l.id);
-            if (!flying.some((id) => next.has(id))) flying.forEach((id) => next.add(id));
+            const fallback = flying.length ? flying : (s.laps || []).map((l) => l.id);
+            if (!fallback.some((id) => next.has(id))) fallback.forEach((id) => next.add(id));
           }
           return [...next];
         });
@@ -226,7 +227,7 @@ export default function Library() {
           uploaded.push(await api.upload(f));
         } catch (e: any) {
           const reason = e.message || String(e);
-          if (/no flying laps/i.test(reason) || /unknown track/i.test(reason)) noLaps.push(`${f.name} (${reason})`);
+          if (/unknown track/i.test(reason)) noLaps.push(`${f.name} (${reason})`);
           else failed.push({ name: f.name, reason });
         }
       }
@@ -412,7 +413,7 @@ export default function Library() {
                 onChange={(e) => e.target.files && onFiles(e.target.files)}
               />
             </label>
-            {busy && <div>Processing… files without flying laps are skipped.</div>}
+            {busy && <div>Processing…</div>}
           </div>
           {err && <div className="err">{err}</div>}
           {warn && <div className="notice warn">{warn}</div>}
@@ -527,7 +528,9 @@ export default function Library() {
                     {detail.error && <div className="err">{detail.error}</div>}
                     {!detail.lap_count && (
                       <div className="err" style={{ marginTop: 6 }}>
-                        No flying laps in this log. It is not included in analysis until you set S/F and reprocess.
+                        {detail.layout?.timing_mode === "stage"
+                          ? "No timed A→B run yet. Open analysis → Track, place start (A) and finish (B), then Save + reprocess."
+                          : "No flying laps yet. Open analysis → Track, place S/F (or switch to point-to-point A→B), then Save + reprocess."}
                       </div>
                     )}
                   </div>

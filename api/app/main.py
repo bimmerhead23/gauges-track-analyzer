@@ -115,10 +115,12 @@ def _mount_ui() -> None:
         app.mount("/assets", StaticFiles(directory=assets), name="assets")
     index = ui / "index.html"
 
+    root = ui.resolve()
+
     @app.get("/{full_path:path}")
     def spa(full_path: str):
-        candidate = ui / full_path
-        if full_path and candidate.is_file():
+        candidate = (ui / full_path).resolve()
+        if full_path and candidate.is_file() and (candidate == root or root in candidate.parents):
             return FileResponse(candidate)
         return FileResponse(index)
 

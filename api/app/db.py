@@ -44,6 +44,12 @@ def ensure_schema() -> None:
         _add_column_if_missing(conn, "sessions", "log_sheet", json_sql)
         _add_column_if_missing(conn, "sessions", "analysis_settings", json_sql)
         _add_column_if_missing(conn, "layouts", "turns", json_sql)
+        _add_column_if_missing(conn, "layouts", "finish_gate", json_sql)
+        _add_column_if_missing(conn, "layouts", "timing_mode", "VARCHAR(16)")
+        _add_column_if_missing(conn, "laps", "sectors_source", "VARCHAR(16)")
+        conn.execute(
+            text("UPDATE layouts SET timing_mode = 'loop' WHERE timing_mode IS NULL OR timing_mode = ''")
+        )
 
     from .models import Session, Vehicle
 

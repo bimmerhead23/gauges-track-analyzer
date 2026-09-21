@@ -43,7 +43,15 @@ export default function App() {
             <Link className={loc.pathname === "/" ? "active" : ""} to="/">
               Library
             </Link>
-            <Link className={loc.pathname.startsWith("/analyze") ? "active" : ""} to="/analyze">
+            <Link
+              className={loc.pathname.startsWith("/analyze") ? "active" : ""}
+              to={loc.pathname.startsWith("/analyze") ? `${loc.pathname}${loc.search}` : "/analyze"}
+              onClick={(e) => {
+                if (loc.pathname.startsWith("/analyze") && !e.metaKey && !e.ctrlKey && !e.shiftKey && !e.altKey) {
+                  e.preventDefault();
+                }
+              }}
+            >
               Analysis
             </Link>
           </nav>

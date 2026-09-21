@@ -10,7 +10,7 @@ This is small on purpose — a few hundred rows of lat/lon, not map tiles.
 # Each layout: name, direction (CW/CCW/BOTH), length_m, lat, lon, radius_m
 # Optional sf_gate dict.
 
-def L(name, direction, length_m, lat, lon, radius_m=8000, sf_gate=None):
+def L(name, direction, length_m, lat, lon, radius_m=8000, sf_gate=None, timing_mode="loop", finish_gate=None):
     return {
         "name": name,
         "direction": direction,
@@ -19,6 +19,8 @@ def L(name, direction, length_m, lat, lon, radius_m=8000, sf_gate=None):
         "centroid_lon": lon,
         "match_radius_m": radius_m,
         "sf_gate": sf_gate,
+        "timing_mode": timing_mode,
+        "finish_gate": finish_gate,
     }
 
 
@@ -117,7 +119,10 @@ TRACKS = [
     {"name": "Silverstone Circuit", "venue": "Silverstone, UK", "layouts": [L("Grand Prix", "CW", 5891, 52.0786, -1.0169)]},
     {"name": "Spa-Francorchamps", "venue": "Stavelot, Belgium", "layouts": [L("Grand Prix", "CW", 7004, 50.4372, 5.9714)]},
     {"name": "Nurburgring GP", "venue": "Nurburg, Germany", "layouts": [L("Grand Prix", "CW", 5148, 50.3356, 6.9475)]},
-    {"name": "Nurburgring Nordschleife", "venue": "Nurburg, Germany", "layouts": [L("Nordschleife", "CW", 20832, 50.3356, 6.9475, 15000)]},
+    {"name": "Nurburgring Nordschleife", "venue": "Nurburg, Germany", "layouts": [
+        L("Nordschleife", "CW", 20832, 50.3560, 6.9620, 15000),
+        L("Bridge to Gantry", "CW", 20500, 50.3560, 6.9620, 15000, timing_mode="stage"),
+    ]},
     {"name": "Monza", "venue": "Monza, Italy", "layouts": [L("Grand Prix", "CW", 5793, 45.6156, 9.2811)]},
     {"name": "Imola", "venue": "Imola, Italy", "layouts": [L("Grand Prix", "CCW", 4909, 44.3439, 11.7167)]},
     {"name": "Mugello", "venue": "Scarperia, Italy", "layouts": [L("Grand Prix", "CW", 5245, 43.9975, 11.3719)]},

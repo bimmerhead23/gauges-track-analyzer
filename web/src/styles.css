@@ -241,6 +241,32 @@ tr.selected { background: var(--selected-row); }
   height: 100%;
   display: block;
 }
+.panel h3.scatter-head {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 6px;
+}
+.scatter-head-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.scatter-head-controls {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.scatter-head-controls .kind-select {
+  flex: 1 1 0;
+  min-width: 0;
+  max-width: none;
+}
+.scatter-flips {
+  display: flex;
+  flex-shrink: 0;
+  gap: 4px;
+}
 .panel.map .map-body { flex: 1; min-height: 0; position: relative; }
 .map-wrap { position: relative; height: 100%; width: 100%; }
 .map-legend {
@@ -677,6 +703,10 @@ html.light .ab-mark-b { color: #8250df; }
   background: #f0c040;
   box-shadow: 0 0 0 3px rgba(240, 192, 64, 0.85);
 }
+.sf-handle-dot.finish {
+  background: #ff7931;
+  box-shadow: 0 0 0 2px rgba(255, 121, 49, 0.55);
+}
 .map-wrap.placing-split .leaflet-container { cursor: crosshair !important; }
 .leaflet-tooltip.sector-label {
   background: color-mix(in srgb, var(--bg) 82%, transparent);
@@ -740,6 +770,31 @@ html.light .ab-mark-b { color: #8250df; }
   height: 0 !important;
   margin: 0 !important;
 }
+.math-box { margin-top: 10px; }
+.math-form { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; }
+.math-form input { width: 100%; }
+.math-row { display: flex; justify-content: space-between; gap: 8px; align-items: center; font-size: 12px; }
+.mech-strip { display: flex; flex-direction: column; gap: 4px; padding: 6px 10px 0; }
+.mech-lap { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.pill.mech-flag { border-color: #d29922; color: #d29922; }
+.setup-compare { padding: 8px 10px 0; overflow-x: auto; }
+.setup-compare table { width: 100%; font-size: 12px; }
+.setup-compare th, .setup-compare td { text-align: left; padding: 4px 8px; white-space: nowrap; }
+.turn-rail { display: flex; flex-wrap: wrap; gap: 4px; margin: 6px 0; }
+.turn-mark { background: transparent; border: none; }
+.turn-mark span {
+  display: inline-block;
+  font-size: 10px;
+  line-height: 14px;
+  padding: 0 4px;
+  border-radius: 3px;
+  background: rgba(13, 17, 23, 0.82);
+  color: #f0f6fc;
+  border: 1px solid rgba(240, 246, 252, 0.35);
+  white-space: nowrap;
+}
+.kind-select.lap-kind { margin-left: 6px; font-size: 11px; }
+
 .u-cursor-pt[data-val]::after {
   content: attr(data-val);
   position: absolute;

@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import type { LogSheet } from "./types";
+import { convertMaybe, convertValue, loadUnitPref, preferredUnit, useUnitPref } from "./units";
 
 const WEATHER = ["", "Dry", "Damp", "Wet", "Rain", "Cloudy", "Hot", "Cold"];
 const WIND = ["", "Calm", "Light", "Windy"];
@@ -14,6 +15,12 @@ function parseNum(raw: string): number | null {
   if (!t) return null;
   const n = Number(t);
   return Number.isFinite(n) ? n : null;
+}
+
+function shownNum(v: number | null | undefined, from: string, to: string): string {
+  const n = convertMaybe(v, from, to);
+  if (n == null || Number.isNaN(Number(n))) return "";
+  return String(Math.round(Number(n) * 10) / 10);
 }
 
 export function sheetFilled(sheet?: LogSheet | null): boolean {
@@ -36,6 +43,10 @@ export default function LogSheetForm({
   copyFrom?: LogSheet | null;
   copyLabel?: string;
 }) {
+  const storedPref = useUnitPref();
+  const pref = loadUnitPref() || storedPref;
+  const tempUnit = pref === "metric" ? "°C" : "°F";
+  const pressUnit = preferredUnit("psi", pref);
   const [local, setLocal] = useState<LogSheet>(sheet || {});
   const [localNotes, setLocalNotes] = useState(notes || "");
   const localRef = useRef(local);
@@ -103,23 +114,29 @@ export default function LogSheetForm({
           </select>
         </label>
         <label>
-          Ambient °F
+          Ambient {tempUnit}
           <input
             type="number"
             step="0.1"
-            value={num(local.ambient_f)}
-            onChange={(e) => patch({ ambient_f: parseNum(e.target.value) })}
-            onBlur={() => save(local)}
+            value={shownNum(local.ambient_f, "°F", tempUnit)}
+            onChange={(e) => {
+              const shown = parseNum(e.target.value);
+              patch({ ambient_f: shown == null ? null : convertValue(shown, tempUnit, "°F") });
+            }}
+            onBlur={() => save()}
           />
         </label>
         <label>
-          Track °F
+          Track {tempUnit}
           <input
             type="number"
             step="0.1"
-            value={num(local.track_temp_f)}
-            onChange={(e) => patch({ track_temp_f: parseNum(e.target.value) })}
-            onBlur={() => save(local)}
+            value={shownNum(local.track_temp_f, "°F", tempUnit)}
+            onChange={(e) => {
+              const shown = parseNum(e.target.value);
+              patch({ track_temp_f: shown == null ? null : convertValue(shown, tempUnit, "°F") });
+            }}
+            onBlur={() => save()}
           />
         </label>
         <label>
@@ -144,7 +161,7 @@ export default function LogSheetForm({
           </select>
         </label>
         <div className="wide">
-          <div className="muted" style={{ marginBottom: 4 }}>Hot pressures (psi)</div>
+          <div className="muted" style={{ marginBottom: 4 }}>Hot pressures ({pressUnit})</div>
           <div className="sheet-pressures">
             {([
               ["pressure_fl", "FL"],
@@ -157,9 +174,12 @@ export default function LogSheetForm({
                 <input
                   type="number"
                   step="0.1"
-                  value={num(local[key])}
-                  onChange={(e) => patch({ [key]: parseNum(e.target.value) })}
-                  onBlur={() => save(local)}
+                  value={shownNum(local[key], "psi", pressUnit)}
+                  onChange={(e) => {
+                    const shown = parseNum(e.target.value);
+                    patch({ [key]: shown == null ? null : convertValue(shown, pressUnit, "psi") });
+                  }}
+                  onBlur={() => save()}
                 />
               </label>
             ))}

@@ -6,7 +6,7 @@ This is Race Studio / MoTeC-style analysis for **Gauge.S** logs: ECU + GPS in on
 
 You do **not** need Race Studio, MoTeC, or a Gauge.S device plugged in. You need the **CSV** the logger already wrote.
 
-**[Live demo](https://gauges-track-analyzer-demo.cnbhome.com)** — click around COTA / Cresson logs. Uploads are wiped overnight; Reset / Restore / Delete are off.
+**[Live demo](https://gauges-track-analyzer-demo.cnbhome.com)** — click around COTA / Cresson logs. Uploads are wiped overnight. Reset, Restore, Delete, track edits, and lap labels are off.
 
 Run it yourself: [http://localhost:8090](http://localhost:8090) after the Docker command below.
 
@@ -40,9 +40,9 @@ Wait until the log says the app is up, then open **[http://localhost:8090](http:
 4. Click the row. Preview on the right lists laps. Tick the flying laps you care about.
 5. **Open analysis**. You’re on **Overlay**.
 
-If import says **no flying laps**, the file never crossed a timing line (paddock, tow, unknown S/F). Use the **Track** tab later to place start/finish, then **Reprocess**.
+If the row says **no flying laps**, the log matched a track but never crossed a timing line (paddock, tow, missing S/F, or a point-to-point run). Keep the session, open **Track**, place the gates, then **Save + reprocess**.
 
-If the track isn’t in the catalog, GPS matching can fail. Place S/F yourself on **Track** after a best-effort import, or file an issue with the venue name.
+If the track isn’t in the catalog, the log is still imported as a new track named from its GPS. Open **Track**, confirm the start/finish, rename it, then **Save + reprocess**. File an issue if you want that circuit in the catalog for everyone.
 
 Stop the app with `Ctrl+C` in that terminal, or `docker compose down`. Your library lives in a Docker volume and survives rebuilds.
 
@@ -54,7 +54,7 @@ This is your session list — every CSV you’ve imported.
 
 ![Library with Circuit of the Americas sessions, log sheet, and vehicle](docs/screenshots/library.jpg)
 
-**Import.** Drop one or many CSVs. Header names wander (`GPS Latitude` vs `lat`, `TPS` vs throttle); the importer maps them. GPS is matched against **80+ circuits**. Laps are split **out / flying / in / pit**. Logs that never leave the paddock are skipped.
+**Import.** Drop one or many CSVs. Header names wander (`GPS Latitude` vs `lat`, `TPS` vs throttle); the importer maps them. GPS is matched against **80+ circuits**. Laps are split **out / flying / in / pit**. A log that matches no circuit is kept as its own track (named from the GPS) so you can place gates. Known-track logs with no flying laps are kept for the same reason.
 
 **Table.** Columns: when, layout, file, flying-lap count, best time, status. Click a header to sort. Click a row to preview. **Cmd/Ctrl-click** (Mac/Windows) to select several sessions from the same track and overlay them together.
 
@@ -62,7 +62,7 @@ This is your session list — every CSV you’ve imported.
 
 **Vehicle.** Pick a saved car or **New vehicle…**. The name is reused at every track.
 
-**Log sheet.** Weather, wind, ambient / track temp, tyre set and health, four hot pressures, fuel, wing, setup notes, and a free field for Coach. This is what the AI reads when you ask for a debrief.
+**Log sheet.** Weather, wind, ambient / track temp, tyre set and health, four hot pressures, fuel, wing, setup notes, and a free field for Coach. This is what the AI reads when you ask for a debrief. Temps and hot pressures follow the metric / imperial switch. They are stored as °F and psi, which is what Coach reads.
 
 **Copy last at this track.** Copies vehicle **and** log sheet from the previous session at this venue so you are not retyping Hoosiers every run group.
 
@@ -78,23 +78,37 @@ This is your session list — every CSV you’ve imported.
 
 ## Analysis — Overlay
 
-Select one lap or twenty, from one day or three weekends **at the same track**. Traces are **distance-synced**: Turn 1 on Saturday sits on Turn 1 on Sunday.
+Select one lap or twenty, from one day or three weekends **at the same track**. Traces are **distance-synced** onto the baseline lap's sector beacons, so the end of each sector lines up. Turn 1 on Saturday sits on Turn 1 on Sunday when the start/finish and splits are the same physical gates.
 
 ![Zoomed overlay with cursor values, speed-colored map, and scatter](docs/screenshots/overlay-zoom.jpg)
 
-**Laps (left).** Tick to plot. The fastest flying lap in the selection is **best**. Click a lap to set **baseline** (reference for delta and splits). Out/in laps stay labeled so you don’t mix them with flying.
+**Laps (left).** Tick to plot. The fastest flying lap in the selection is **best**. Click a lap to set **baseline** (reference for delta and splits). The label on each row is **flying**, **out**, **in**, **pit**, or **invalid**. Changing it recomputes the best lap. You do not have to move start/finish to throw out a yellow-flag lap. Out/in laps stay out of the best unless you mark them flying.
 
-**Channels.** Search, tick to plot. Drag the grip to reorder traces. **Min / max** on a channel lock the Y-axis (example: throttle that only hits 75% — set max 75 so WOT fills the plot). Units are on the axis: mph, %, g, rpm.
+**Channels.** Search, tick to plot. Drag the grip to reorder traces. **Min / max** on a channel lock the Y-axis (example: throttle that only hits 75% — set max 75 so WOT fills the plot). **Math channels** at the bottom of the list are expressions over channel keys (`rpm`, `tps`, `brake`, `gps_speed_mph`, `wheel_speed_mph`). Three are seeded: combined G, throttle-brake overlap, and GPS speed minus wheel speed in mph. Add or delete your own. The public demo can plot them but cannot edit them.
+
+**Health.** With laps selected, a strip shows min oil pressure while moving, max coolant, max oil temp, and AFR at full throttle. A value outside a coarse range is flagged. Channels the log does not have are omitted.
+
+**Setups.** Two or more sessions on the overlay show a table of best lap, ambient, track temp, tyres, hot pressures, and wing.
+
+**Units.** Overlay top bar: **Metric** or **Imperial**. Converts temps, pressures, and speeds on traces, map legend, scatter, histogram, splits, and the report.
+
+| | Metric | Imperial |
+|---|---|---|
+| Temperature (oil, coolant, IAT, diff) | °C | °F |
+| Oil pressure | bar | psi |
+| Speed (GPS and wheel) | km/h | mph |
+
+Gauge.S exports often leave the unit blank (`Oil temperature ()`). The importer infers from the numbers: ~90 oil is °C, ~330 oil pressure is kPa (shown as bar), ~210 GPS is km/h. Switching to Imperial converts those values; it does not relabel 90 °C as 90 °F. The choice is remembered in the browser and on the session.
 
 **Cursor.** Hover the traces: values pop on the line, the car moves on the map, the scatter highlights. Hover the map or scatter and the traces follow.
 
 **Zoom.** Drag on the plot to window a corner. Scroll to zoom, drag to pan, double-click to reset. The histogram / AFR / report can clip to this same window.
 
-**Time gained / lost.** Bottom strip vs the baseline lap, against distance. Above the line you are slower.
+**Map.** Esri satellite. Color by **lap**, **speed**, **throttle**, **brake**, or **AFR**. Two or more laps → thinner lines so both stay visible. S/F and sector beacons sit on the driven line. Turn numbers from the same apex list the coach uses are drawn on the line. Drag the divider to resize the map. A GPS gap is left out of the line instead of breaking the map.
 
-**Map.** Esri satellite. Color by **lap**, **speed**, **throttle**, **brake**, or **AFR**. Two or more laps → thinner lines so both stay visible. S/F and sector beacons sit on the driven line. Drag the divider to resize the map.
+**Time gained / lost.** Bottom strip vs the baseline lap, against distance. Above the line you are slower. The turn buttons under the strip zoom the overlay to that corner.
 
-**Scatter.** Pick two channels (default G-G). Same cursor. Useful for trail-braking vs rotation.
+**Scatter.** Pick two channels. Default is lateral G on X and longitudinal G on Y. Positive lateral G is a left turn and is drawn to the right. Positive longitudinal G is braking and is drawn at the top. When the log has an accelerometer, those channels are used and oriented to that same frame. **Flip X** / **Flip Y** mirror an axis. They do not swap the channels.
 
 **A–B dual cursor.** Click once for **A**, click again for **B** (or use the hint in the plot header). You get Δt, min/max/avg speed, throttle, brake, G in that slice — on traces, map, and scatter. Right-click or Escape clears.
 
@@ -108,7 +122,7 @@ Select one lap or twenty, from one day or three weekends **at the same track**. 
 
 ## Splits
 
-Official sectors in lap-distance order. **TIME = S1 + S2 + S3** (however many sectors you have). If the math does not add up, the S/F is wrong — fix it on **Track**.
+Official sectors in lap-distance order. **TIME = S1 + S2 + S3** (however many sectors you have). If the math does not add up, the S/F is wrong — fix it on **Track**. If a beacon was never crossed, the page says so: those splits are equal thirds, not the track's sectors.
 
 ![Splits: virtual best, sector times, and gain/loss vs the reference lap](docs/screenshots/splits.jpg)
 
@@ -148,16 +162,20 @@ Channel min / max / avg for the selected laps, after gates and optional overlay 
 
 ## Track editor
 
-Use this when catalog S/F does not match *your* line (club tracks, a different timing loop, or GPS that never crosses the published line).
+Use this when catalog S/F does not match *your* line (club tracks, a different timing loop, or GPS that never crosses the published line), and for anything that is not a closed circuit.
 
 ![Track editor: Circuit of the Americas S/F and sector beacons on satellite](docs/screenshots/track-editor.jpg)
 
-- **White** handle = start/finish. **Gold** = sector splits (end of S1, S2, …).
+- **Loop S/F** — one white handle. Crossing it starts the next lap (out / flying / in).
+- **Point-to-point A→B** — white **A** then orange **B**. Time is the next finish after each start. Rally stages, hillclimbs, Nordschleife **bridge to gantry**, any track with no official start/finish loop.
+- **Gold** handles = intermediate splits (end of S1, S2, …). Overlay distance is measured from A (or S/F).
 - Drag along the GPS; they snap and stay perpendicular.
-- **Propose S/F from GPS**, **Add split**, **Place equal** (2–8), **Remove**.
-- **Save + reprocess** recalculates every session at this layout (progress: n of N). Your edits are tagged as user-owned and are not overwritten when the catalog is reseeded.
+- **Propose S/F from GPS** (loop) or **Propose A/B from GPS ends** (point-to-point), **Place A / Place B**, **Add split**, **Place equal** (2–8), **Remove**. Propose only previews the gate. Nothing is written until you save.
+- **Save + reprocess** recalculates every session at this layout (progress: n of N). Your edits are tagged as user-owned and are not overwritten when the catalog is reseeded. Track edits are off on the public demo.
 
 Empty sectors default to equal thirds until you place them.
+
+Nordschleife tourist / BTG logs should match the **Bridge to Gantry** layout automatically (start and end GPS are far apart). Switch layout in the Track sidebar if it picked the full loop instead. Place A on the bridge, B on the gantry, Save.
 
 ---
 

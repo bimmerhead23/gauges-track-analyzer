@@ -7,8 +7,28 @@ import { api } from "../api";
 import { exportViewPng } from "../exportPng";
 import { channelAxisLabel, fmtDelta, fmtLap, fmtNum } from "../format";
 import LogSheetForm, { sheetFilled } from "../LogSheet";
+import MathChannels from "../components/MathChannels";
+import MechanicalStrip from "../components/MechanicalStrip";
+import SetupCompare from "../components/SetupCompare";
+import TurnRail from "../components/TurnRail";
 import { cssVar, useTheme } from "../theme";
 import { LAP_COLORS, type Channel, type Gate, type Lap, type Layout, type MathChannel, type Session } from "../types";
+import {
+  UNITS_KEY,
+  UnitPrefContext,
+  convertMaybe,
+  convertScaleMap,
+  convertValue,
+  convertY,
+  displayChannel,
+  inferPrefFromChannels,
+  loadUnitPref,
+  preferredUnit,
+  remapSpeedKey,
+  useUnitPref,
+  visibleChannels,
+  type UnitPref,
+} from "../units";
 
 function plotTheme() {
   return {
@@ -164,6 +184,11 @@ function loadPlotted(): string[] {
   return DEFAULT_CH;
 }
 
+function existingPlotted(plotted: string[], channels: Channel[]): string[] {
+  const have = new Set(channels.map((c) => c.key));
+  return plotted.filter((k) => k === "delta_t" || have.has(k));
+}
+
 function loadMapWidth(): number {
   const n = Number(localStorage.getItem(MAP_W_KEY));
   return Number.isFinite(n) && n >= 180 && n <= 900 ? n : MAP_W_DEFAULT;
@@ -237,6 +262,7 @@ export default function Analysis() {
   const [traces, setTraces] = useState<any[]>([]);
   const [delta, setDelta] = useState<any>(null);
   const [mapData, setMapData] = useState<any[]>([]);
+  const [turns, setTurns] = useState<{ n: number; apex_m: number; d0_m: number; d1_m: number; name?: string | null }[]>([]);
   const [tab, setTab] = useState<Tab>("traces");
   const [err, setErr] = useState("");
   const [search, setSearch] = useState("");
@@ -244,6 +270,8 @@ export default function Analysis() {
   const [exportOpen, setExportOpen] = useState(false);
   const [exportErr, setExportErr] = useState("");
   const [hydrated, setHydrated] = useState(false);
+  const [unitPref, setUnitPref] = useState<UnitPref>(() => loadUnitPref() || "imperial");
+  const userSetUnits = useRef(loadUnitPref() != null);
 
   const laps: Lap[] = useMemo(
     () => sessions.flatMap((s) => (s.laps || []).map((l) => ({ ...l, session_id: s.id }))),
@@ -283,6 +311,10 @@ export default function Analysis() {
             setGatePreset(gp.id);
             setGates(Array.isArray(saved.gates) && saved.gates.length ? (saved.gates as DataGate[]) : gp.gates);
           }
+          if (saved.units === "metric" || saved.units === "imperial") {
+            setUnitPref(saved.units);
+            userSetUnits.current = true;
+          }
         }
         setHydrated(true);
         const allLaps = ss.flatMap((s) => s.laps || []);
@@ -290,7 +322,13 @@ export default function Analysis() {
         const have = new Set(allLaps.map((l) => l.id));
         const fromUrl = lapIdsParam.filter((id) => have.has(id));
         const best = [...valid].sort((a, b) => a.time_ms - b.time_ms)[0];
-        const pick = fromUrl.length ? fromUrl : best ? [best.id] : valid.slice(0, 2).map((l) => l.id);
+        const pick = fromUrl.length
+          ? fromUrl
+          : best
+            ? [best.id]
+            : valid.length
+              ? valid.slice(0, 2).map((l) => l.id)
+              : allLaps.map((l) => l.id);
         setSelected(pick);
         const chosen = allLaps.filter((l) => pick.includes(l.id));
         const pool = chosen.filter((l) => l.kind === "valid");
@@ -310,13 +348,13 @@ export default function Analysis() {
   useEffect(() => {
     if (!hydrated || !sessions.length) return;
     const t = window.setTimeout(() => {
-      const analysis_settings = { plotted, chScale, mapWidth, mapColor, gatePreset, gates };
+      const analysis_settings = { plotted, chScale, mapWidth, mapColor, gatePreset, gates, units: unitPref };
       for (const s of sessions) {
         api.patchSession(s.id, { analysis_settings }).catch(() => {});
       }
     }, 600);
     return () => window.clearTimeout(t);
-  }, [hydrated, sessions.map((s) => s.id).join(","), plotted, chScale, mapWidth, mapColor, gatePreset, gates]);
+  }, [hydrated, sessions.map((s) => s.id).join(","), plotted, chScale, mapWidth, mapColor, gatePreset, gates, unitPref]);
 
   useEffect(() => {
     if (!exportOpen) return;
@@ -337,25 +375,68 @@ export default function Analysis() {
     if (fastest) setRefId(fastest.id);
   }, [selected.join(","), laps.map((l) => `${l.id}:${l.time_ms}:${l.kind}`).join(",")]);
 
+  const listChannels = useMemo(() => visibleChannels(channels, unitPref), [channels, unitPref]);
+  const plotKeys = useMemo(() => {
+    const remapped = plotted.map((k) => remapSpeedKey(k, channels, unitPref));
+    return existingPlotted([...new Set(remapped)], listChannels);
+  }, [plotted, listChannels, channels, unitPref]);
+
+  useEffect(() => {
+    if (userSetUnits.current || !channels.length) return;
+    const inf = inferPrefFromChannels(channels);
+    if (inf) setUnitPref(inf);
+  }, [channels]);
+
+  function applyUnitPref(next: UnitPref) {
+    if (next === unitPref) return;
+    setPlotted((p) => [...new Set(p.map((k) => remapSpeedKey(k, channels, next)))]);
+    setChScale((s) => convertScaleMap(s, channels, unitPref, next));
+    setGates((gs) =>
+      gs.map((g) => {
+        const ch = channels.find((c) => c.key === g.channel);
+        if (!ch) return { ...g, channel: remapSpeedKey(g.channel, channels, next) };
+        const fromU = preferredUnit(ch.unit, unitPref);
+        const toU = preferredUnit(ch.unit, next);
+        return {
+          ...g,
+          channel: remapSpeedKey(g.channel, channels, next),
+          value: convertValue(g.value, fromU, toU),
+        };
+      })
+    );
+    userSetUnits.current = true;
+    setUnitPref(next);
+    try {
+      localStorage.setItem(UNITS_KEY, next);
+    } catch {
+      /* ignore */
+    }
+  }
+  const plotKeySig = plotKeys.join(",");
+  const channelKeySig = channels.map((c) => c.key).join(",");
+
   useEffect(() => {
     if (!selected.length) return;
-    const ch = plotted.filter((c) => c !== "delta_t");
+    const ch = plotKeys.filter((c) => c !== "delta_t");
     if (ch.length) {
-      api.traces(selected, ch).then(setTraces).catch((e) => setErr(String(e)));
+      api.traces(selected, ch, refId).then(setTraces).catch((e) => setErr(String(e)));
     } else {
       setTraces([]);
     }
-    api.map(selected).then(setMapData).catch(() => {});
+    api.map(selected, refId).then((res) => {
+      setMapData(Array.isArray(res) ? res : res.laps || []);
+      setTurns(Array.isArray(res) ? [] : res.turns || []);
+    }).catch(() => {});
     if (refId) api.delta(refId, selected).then(setDelta).catch(() => {});
-  }, [selected.join(","), plotted.join(","), refId]);
+  }, [selected.join(","), plotKeySig, refId, channelKeySig]);
 
   useEffect(() => {
-    if (!pinned || !selected.length || !plotted.length) {
+    if (!pinned || !selected.length || !plotKeys.length) {
       if (!pinned) setCursorVals(null);
       return;
     }
-    api.cursor(selected, cursorDist, plotted).then(setCursorVals).catch(() => {});
-  }, [pinned, cursorDist, selected.join(","), plotted.join(",")]);
+    api.cursor(selected, cursorDist, plotKeys, refId).then(setCursorVals).catch(() => {});
+  }, [pinned, cursorDist, selected.join(","), plotKeySig, refId]);
 
   const abB = markB != null ? markB : markA != null ? hoverDist : null;
   useEffect(() => {
@@ -363,13 +444,13 @@ export default function Analysis() {
       setAbData(null);
       return;
     }
-    const ch = plotted.filter((c) => c !== "delta_t");
+    const ch = plotKeys.filter((c) => c !== "delta_t");
     const delay = markB != null ? 0 : 140;
     const t = window.setTimeout(() => {
-      api.ab(selected, markA, abB, ch.length ? ch : ["gps_speed_mph", "tps", "brake"]).then(setAbData).catch(() => setAbData(null));
+      api.ab(selected, markA, abB, ch.length ? ch : ["gps_speed_mph", "tps"], refId).then(setAbData).catch(() => setAbData(null));
     }, delay);
     return () => window.clearTimeout(t);
-  }, [markA, abB, markB, selected.join(","), plotted.join(",")]);
+  }, [markA, abB, markB, selected.join(","), plotKeySig, refId]);
 
   function reportHover(dist: number | null) {
     setHoverDist(dist);
@@ -439,7 +520,16 @@ export default function Analysis() {
   }
 
   function toggleCh(key: string) {
-    setPlotted((p) => (p.includes(key) ? p.filter((x) => x !== key) : [...p, key]));
+    const speed = key === "gps_speed" || key === "gps_speed_mph";
+    setPlotted((p) => {
+      const visible = p.map((k) => remapSpeedKey(k, channels, unitPref));
+      const on = visible.includes(key) || p.includes(key);
+      const stripped = p.filter((k) => {
+        if (speed && (k === "gps_speed" || k === "gps_speed_mph")) return false;
+        return k !== key;
+      });
+      return on ? stripped : [...stripped, key];
+    });
   }
   function reorderPlotted(from: string, to: string, after: boolean) {
     setPlotted((p) => {
@@ -567,6 +657,7 @@ export default function Analysis() {
   const headerSlot = typeof document !== "undefined" ? document.getElementById("analysis-header-slot") : null;
 
   return (
+    <UnitPrefContext.Provider value={unitPref}>
     <div style={{ display: "flex", flexDirection: "column", height: "100%", minHeight: 0 }}>
       {headerSlot &&
         createPortal(
@@ -624,13 +715,17 @@ export default function Analysis() {
         </nav>
       </div>
       {(err || exportErr) && <div className="err" style={{ padding: 8 }}>{err || exportErr}</div>}
+      {tab === "traces" && <SetupCompare sessions={sessions} />}
+      {tab === "traces" && <MechanicalStrip lapIds={selected} />}
       {(tab === "traces" || tab === "histogram" || tab === "afr" || tab === "report") && (
         <GateBar
           preset={gatePreset}
           gates={gates}
-          channels={channels}
+          channels={listChannels}
           onPreset={setGatePreset}
           onGates={setGates}
+          unitPref={unitPref}
+          onUnitPref={applyUnitPref}
         />
       )}
       {tab === "traces" && (
@@ -654,7 +749,29 @@ export default function Analysis() {
                       {sessions.length > 1 && l.session_id != null && (
                         <span className="muted"> · {sessionTag(l.session_id)}</span>
                       )}{" "}
-                      <span className={`pill ${l.kind}`}>{l.kind}</span>
+                      <select
+                        className="kind-select lap-kind"
+                        value={l.kind}
+                        title="Flying laps count toward best and the coach. Out, in, pit, and invalid stay on the list."
+                        onClick={(e) => e.stopPropagation()}
+                        onChange={async (e) => {
+                          e.stopPropagation();
+                          const kind = e.target.value;
+                          try {
+                            await api.patchLap(l.id, kind);
+                            const fresh = await api.session(l.session_id);
+                            setSessions((ss) => ss.map((x) => (x.id === fresh.id ? fresh : x)));
+                          } catch (ex: any) {
+                            setErr(ex.message || String(ex));
+                          }
+                        }}
+                      >
+                        <option value="valid">flying</option>
+                        <option value="out">out</option>
+                        <option value="in">in</option>
+                        <option value="pit">pit</option>
+                        <option value="invalid">invalid</option>
+                      </select>
                       {l.is_best && <span className="pill best">best</span>}
                       {on && refId === l.id && <span className="pill best">baseline</span>}
                       <div className="muted" style={{ fontSize: 11 }}>
@@ -670,8 +787,8 @@ export default function Analysis() {
               <h3 style={{ marginTop: 12 }}>Channels</h3>
               <input className="search" placeholder="Filter channels…" value={search} onChange={(e) => setSearch(e.target.value)} />
               <ChannelList
-                channels={channels}
-                plotted={plotted}
+                channels={listChannels}
+                plotted={plotKeys}
                 search={search}
                 cursorVals={cursorVals}
                 traces={traces}
@@ -680,11 +797,13 @@ export default function Analysis() {
                 onReorder={reorderPlotted}
                 onScale={setChannelScale}
               />
+              <MathChannels math={math} onChange={setMath} />
             </div>
           </aside>
           <section className="panel traces">
             <h3>
               Overlay vs distance
+              <span className="muted" style={{ fontWeight: 400, marginLeft: 8 }}>aligned to baseline sectors</span>
               <span className="toolbar-inline">
                 <span className="muted">
                   {markA != null && markB != null
@@ -717,7 +836,7 @@ export default function Analysis() {
             </h3>
             <TraceStack
               traces={traces}
-              plotted={plotted}
+              plotted={plotKeys}
               channels={channels}
               scales={chScale}
               colorFor={colorFor}
@@ -733,11 +852,11 @@ export default function Analysis() {
               onHover={reportHover}
             />
             {abData ? (
-              <AbStrip data={abData} laps={laps} colorFor={colorFor} channels={channels} plotted={plotted} preview={markB == null} />
+              <AbStrip data={abData} laps={laps} colorFor={colorFor} channels={channels} plotted={plotKeys} preview={markB == null} />
             ) : markA != null && markB != null ? (
               <div className="cursor-strip muted">Measuring A–B window…</div>
             ) : (
-              <CursorStrip cursor={cursorVals} selected={selected} colorFor={colorFor} channels={channels} plotted={plotted} />
+              <CursorStrip cursor={cursorVals} selected={selected} colorFor={colorFor} channels={channels} plotted={plotKeys} />
             )}
           </section>
           <div className="overlay-side">
@@ -780,6 +899,7 @@ export default function Analysis() {
                   zoomRange={xRange}
                   markA={markA}
                   markB={markB}
+                  turns={turns}
                 />
               </div>
             </section>
@@ -795,6 +915,7 @@ export default function Analysis() {
                 markA={markA}
                 markB={markB}
                 onUnpin={unpin}
+                refId={refId}
               />
             </section>
           </div>
@@ -807,6 +928,7 @@ export default function Analysis() {
                   : "select laps"}
               </span>
             </h3>
+            <TurnRail turns={turns} onZoom={zoomTo} />
             <DeltaChart
               delta={delta}
               refId={refId}
@@ -835,6 +957,7 @@ export default function Analysis() {
           laps={laps}
           xRange={xRange}
           gates={encodeGates(gates)}
+          refId={refId}
         />
       )}
       {tab === "afr" && (
@@ -877,6 +1000,7 @@ export default function Analysis() {
         />
       )}
     </div>
+    </UnitPrefContext.Provider>
   );
 }
 
@@ -903,16 +1027,25 @@ function ChannelList({
 }) {
   const dragKey = useRef<string | null>(null);
   const [drop, setDrop] = useState<{ key: string; after: boolean } | null>(null);
+  const pref = useUnitPref();
   const q = search.trim().toLowerCase();
   const match = (c: Channel) => !q || (c.name + c.key).toLowerCase().includes(q);
   const selected = plotted.map((k) => channels.find((c) => c.key === k)).filter((c): c is Channel => !!c && match(c));
   const rest = channels.filter((c) => !plotted.includes(c.key) && match(c)).sort((a, b) => a.name.localeCompare(b.name));
 
   function row(c: Channel, on: boolean) {
-    const v = cursorVals?.values?.[0]?.[c.key];
+    const shown = displayChannel(c, pref);
+    const raw = cursorVals?.values?.[0]?.[c.key];
+    const v = convertMaybe(raw, c.unit, shown.unit);
     const dropping = drop?.key === c.key;
     const sc = scales[c.key] || { min: null, max: null };
-    const dataRange = channelDataRange(traces, c.key);
+    const dataRangeRaw = channelDataRange(traces, c.key);
+    const dataRange = dataRangeRaw
+      ? {
+          min: convertValue(dataRangeRaw.min, c.unit, shown.unit),
+          max: convertValue(dataRangeRaw.max, c.unit, shown.unit),
+        }
+      : null;
     return (
       <div
         key={c.key}
@@ -973,8 +1106,8 @@ function ChannelList({
         <input type="checkbox" checked={on} readOnly />
         <span className="dot" style={{ background: on ? "var(--blue)" : "var(--line)" }} />
         <span>
-          {c.name}
-          <div className="muted" style={{ fontSize: 11 }}>{c.unit || c.key}</div>
+          {shown.name}
+          <div className="muted" style={{ fontSize: 11 }}>{shown.unit || c.key}</div>
           {on && (
             <div className="ch-scale" onClick={(e) => e.stopPropagation()}>
               <input
@@ -1033,6 +1166,7 @@ function CursorStrip({
   channels: Channel[];
   plotted: string[];
 }) {
+  const pref = useUnitPref();
   if (!cursor?.values?.length) return null;
   const keys = plotted.slice(0, 8);
   return (
@@ -1042,10 +1176,12 @@ function CursorStrip({
           <span className="dot" style={{ background: colorFor(v.lap_id), display: "inline-block", marginRight: 6 }} />
           {keys.map((k) => {
             const meta = channels.find((c) => c.key === k);
+            const shown = meta ? displayChannel(meta, pref) : undefined;
+            const val = convertMaybe(v[k], meta?.unit || "", shown?.unit || "");
             return (
               <span key={k} style={{ marginRight: 10 }}>
-                <b>{meta?.name || k}</b>
-                {v[k] == null ? "—" : fmtNum(v[k], 1)}
+                <b>{shown?.name || meta?.name || k}</b>
+                {val == null ? "—" : fmtNum(val, 1)}
               </span>
             );
           })}
@@ -1076,6 +1212,7 @@ function AbStrip({
   plotted: string[];
   preview?: boolean;
 }) {
+  const pref = useUnitPref();
   const keys = plotted.filter((k) => k !== "delta_t").slice(0, 5);
   const rows = data?.laps || [];
   if (!rows.length) return null;
@@ -1098,13 +1235,17 @@ function AbStrip({
             </span>
             {keys.map((k) => {
               const meta = channels.find((c) => c.key === k);
+              const shown = meta ? displayChannel(meta, pref) : undefined;
               const s = r.channels?.[k];
               if (!s) return null;
+              const mn = convertMaybe(s.min, meta?.unit || "", shown?.unit || "");
+              const mx = convertMaybe(s.max, meta?.unit || "", shown?.unit || "");
+              const avg = convertMaybe(s.avg, meta?.unit || "", shown?.unit || "");
               return (
                 <span key={k} style={{ marginRight: 10 }}>
-                  <b>{meta?.name || k}</b>
-                  {s.min == null ? "—" : `${fmtNum(s.min, 1)}–${fmtNum(s.max, 1)}`}
-                  <span className="muted"> avg {s.avg == null ? "—" : fmtNum(s.avg, 1)}</span>
+                  <b>{shown?.name || meta?.name || k}</b>
+                  {mn == null ? "—" : `${fmtNum(mn, 1)}–${fmtNum(mx, 1)}`}
+                  <span className="muted"> avg {avg == null ? "—" : fmtNum(avg, 1)}</span>
                 </span>
               );
             })}
@@ -1397,15 +1538,31 @@ function TraceStack({
   onDragRange: (range: [number, number] | null) => void;
   onHover: (d: number | null) => void;
 }) {
-  const keys = plotted.filter((k) => traces.some((t) => t.series?.[k]));
+  const pref = useUnitPref();
+  const have = new Set(channels.map((c) => c.key));
+  const keys = plotted.filter(
+    (k) => have.has(k) && traces.some((t) => (t.series?.[k]?.x?.length || 0) > 1)
+  );
   return (
     <div className="plot-stack" data-export-root>
-      {keys.map((key) => (
+      {keys.map((key) => {
+        const ch = channels.find((c) => c.key === key);
+        const shown = ch ? displayChannel(ch, pref) : undefined;
+        const native = ch?.unit || "";
+        const disp = shown?.unit || native;
+        const converted = native === disp
+          ? traces
+          : traces.map((t) => {
+              const ser = t.series?.[key];
+              if (!ser) return t;
+              return { ...t, series: { ...t.series, [key]: { ...ser, y: convertY(ser.y, native, disp) } } };
+            });
+        return (
         <div className="plot-row" key={key}>
-          <div className="ylabel">{channelAxisLabel(channels.find((c) => c.key === key), key)}</div>
+          <div className="ylabel">{channelAxisLabel(shown || ch, key)}</div>
           <UPlotRow
             seriesKey={key}
-            traces={traces}
+            traces={converted}
             colorFor={colorFor}
             cursorDist={cursorDist}
             pinned={pinned}
@@ -1421,7 +1578,8 @@ function TraceStack({
             onHover={onHover}
           />
         </div>
-      ))}
+        );
+      })}
       {!keys.length && <div className="muted" style={{ padding: 12 }}>Check laps and channels in the list to plot them.</div>}
     </div>
   );
@@ -1630,6 +1788,48 @@ function headingBetween(lat1: number, lon1: number, lat2: number, lon2: number) 
   const x = Math.sin(dl) * Math.cos(p2);
   const y = Math.cos(p1) * Math.sin(p2) - Math.sin(p1) * Math.cos(p2) * Math.cos(dl);
   return ((Math.atan2(x, y) * 180) / Math.PI + 360) % 360;
+}
+
+function proposeEndsFromTraces(data: any[]): { start: Gate; finish: Gate } | null {
+  const tr = data[0];
+  if (!tr?.lat?.length) return null;
+  const pts: { i: number; lat: number; lon: number }[] = [];
+  for (let i = 0; i < tr.lat.length; i++) {
+    if (tr.lat[i] && tr.lon[i]) pts.push({ i, lat: tr.lat[i], lon: tr.lon[i] });
+  }
+  if (pts.length < 8) return null;
+  let i0 = pts[0].i;
+  let i1 = pts[pts.length - 1].i;
+  const dist = tr.dist;
+  if (dist?.length) {
+    const d0 = Number(dist[pts[0].i]) || 0;
+    const d1 = Number(dist[pts[pts.length - 1].i]) || 0;
+    const pad = Math.min(80, Math.max(0, d1 - d0) * 0.02);
+    for (const p of pts) {
+      if ((Number(dist[p.i]) || 0) >= d0 + pad) {
+        i0 = p.i;
+        break;
+      }
+    }
+    for (let k = pts.length - 1; k >= 0; k--) {
+      if ((Number(dist[pts[k].i]) || 0) <= d1 - pad) {
+        i1 = pts[k].i;
+        break;
+      }
+    }
+  }
+  const ahead = (i: number, n: number) => {
+    const j = Math.min(Math.max(0, i + n), tr.lat.length - 1);
+    if (tr.lat[j] && tr.lon[j] && j !== i) return { lat: tr.lat[j], lon: tr.lon[j] };
+    const k = Math.min(Math.max(0, i - n), tr.lat.length - 1);
+    return { lat: tr.lat[k], lon: tr.lon[k] };
+  };
+  const a2 = ahead(i0, 8);
+  const b1 = ahead(i1, -8);
+  return {
+    start: gateFromPoint(tr.lat[i0], tr.lon[i0], headingBetween(tr.lat[i0], tr.lon[i0], a2.lat, a2.lon)),
+    finish: gateFromPoint(tr.lat[i1], tr.lon[i1], headingBetween(b1.lat, b1.lon, tr.lat[i1], tr.lon[i1])),
+  };
 }
 
 function gateFromPoint(lat: number, lon: number, heading: number, halfWidthM = 16): Gate {
@@ -1844,13 +2044,15 @@ function TrackMap({
   zoomRange,
   markA,
   markB,
+  turns,
   editGate,
   onEditGate,
-  placingSplit,
+  onEditFinish,
+  placingKind,
   selectedSplit,
   onEditSectors,
   onSelectSplit,
-  onPlaceSplit,
+  onPlace,
 }: {
   data: any[];
   layout: Layout | null;
@@ -1865,13 +2067,15 @@ function TrackMap({
   zoomRange?: [number, number] | null;
   markA?: number | null;
   markB?: number | null;
+  turns?: { n: number; apex_m: number; name?: string | null }[];
   editGate?: Gate | null;
   onEditGate?: (g: Gate) => void;
-  placingSplit?: boolean;
+  onEditFinish?: (g: Gate) => void;
+  placingKind?: "split" | "start" | "finish" | null;
   selectedSplit?: number | null;
   onEditSectors?: (sectors: Gate[]) => void;
   onSelectSplit?: (i: number | null) => void;
-  onPlaceSplit?: (g: Gate) => void;
+  onPlace?: (g: Gate) => void;
 }) {
   const ref = useRef<HTMLDivElement>(null);
   const mapRef = useRef<L.Map | null>(null);
@@ -1887,15 +2091,18 @@ function TrackMap({
   zoomRangeRef.current = zoomRange ?? null;
   const editRef = useRef(onEditGate);
   editRef.current = onEditGate;
+  const editFinishRef = useRef(onEditFinish);
+  editFinishRef.current = onEditFinish;
   const editSectorsRef = useRef(onEditSectors);
   editSectorsRef.current = onEditSectors;
   const selectSplitRef = useRef(onSelectSplit);
   selectSplitRef.current = onSelectSplit;
-  const placeSplitRef = useRef(onPlaceSplit);
-  placeSplitRef.current = onPlaceSplit;
-  const placingRef = useRef(!!placingSplit);
-  placingRef.current = !!placingSplit;
+  const placeRef = useRef(onPlace);
+  placeRef.current = onPlace;
+  const placingRef = useRef(placingKind || null);
+  placingRef.current = placingKind || null;
   const [legend, setLegend] = useState<{ name: string; unit: string; min: number; max: number } | null>(null);
+  const pref = useUnitPref();
 
   function fitMap(range: [number, number] | null) {
     const map = mapRef.current;
@@ -1945,15 +2152,19 @@ function TrackMap({
     if (!canvasRenderer.current) canvasRenderer.current = L.canvas({ padding: 0.5 });
     const renderer = canvasRenderer.current;
     const nums: number[] = [];
+    const speedTo = pref === "metric" ? "km/h" : "mph";
+    const mapVal = (key: string, v: number) =>
+      key === "gps_speed_mph" ? convertValue(v, "mph", speedTo) : v;
     if (colorBy) {
       for (const tr of data) {
         const y = tr.values?.[colorBy] || [];
-        for (const v of y) if (v != null && Number.isFinite(v)) nums.push(v);
+        for (const v of y) if (v != null && Number.isFinite(v)) nums.push(mapVal(colorBy, v));
       }
     }
     const range = colorBy ? rainbowRange(colorBy, nums) : null;
     const meta = colorBy ? MAP_COLOR_META[colorBy] : null;
-    if (range && meta) setLegend({ name: meta.name, unit: meta.unit, min: range.min, max: range.max });
+    const legendUnit = colorBy === "gps_speed_mph" ? speedTo : meta?.unit || "";
+    if (range && meta) setLegend({ name: meta.name, unit: legendUnit, min: range.min, max: range.max });
     else setLegend(null);
     const multi = data.length > 1;
     const rainbowW = multi ? 2 : 4;
@@ -1965,7 +2176,11 @@ function TrackMap({
         if (tr.lat[i] && tr.lon[i]) pts.push([tr.lat[i], tr.lon[i]]);
       }
       if (pts.length < 2) continue;
-      const chVals = colorBy ? tr.values?.[colorBy] : null;
+      const chValsRaw = colorBy ? tr.values?.[colorBy] : null;
+      const chVals =
+        chValsRaw && colorBy === "gps_speed_mph"
+          ? chValsRaw.map((v: number | null) => (v == null ? v : mapVal(colorBy, v)))
+          : chValsRaw;
       const useRainbow = !!(range && chVals && chVals.length);
       if (useRainbow && range) {
         layers.current.push(
@@ -2010,7 +2225,7 @@ function TrackMap({
         if (placingRef.current) {
           L.DomEvent.stop(e);
           const snapped = snapToTraces(dataRef.current, e.latlng.lat, e.latlng.lng, 0);
-          placeSplitRef.current?.(gateFromPoint(snapped.lat, snapped.lon, snapped.heading));
+          placeRef.current?.(gateFromPoint(snapped.lat, snapped.lon, snapped.heading));
           return;
         }
         const ev = e.originalEvent as MouseEvent | undefined;
@@ -2044,63 +2259,92 @@ function TrackMap({
     if (!editSectorsRef.current) {
       (layout?.sectors || []).forEach((g, i) => drawGate(g, "#d29922", `S${i + 1}`));
     }
+    if (turns?.length && data.length) {
+      const host = data.reduce((a: any, b: any) => ((a?.dist?.length || 0) >= (b?.dist?.length || 0) ? a : b));
+      for (const t of turns) {
+        if (!host?.dist?.length) break;
+        let best = 0;
+        let bd = Infinity;
+        for (let i = 0; i < host.dist.length; i++) {
+          const d = Math.abs((host.dist[i] ?? 0) - t.apex_m);
+          if (d < bd) {
+            bd = d;
+            best = i;
+          }
+        }
+        if (!host.lat[best] || !host.lon[best]) continue;
+        const icon = L.divIcon({
+          className: "turn-mark",
+          html: `<span>T${t.n}</span>`,
+          iconSize: [36, 16],
+          iconAnchor: [18, 8],
+        });
+        const marker = L.marker([host.lat[best], host.lon[best]], { icon, interactive: false, keyboard: false }).addTo(map);
+        if (t.name) marker.bindTooltip(String(t.name), { direction: "top", offset: [0, -8] });
+        layers.current.push(marker);
+      }
+    }
     fitMap(zoomRangeRef.current);
     setTimeout(() => map.invalidateSize(), 50);
-  }, [data, selected.join(","), colorBy, onEditSectors ? "edit" : JSON.stringify(layout?.sectors || [])]);
+  }, [data, selected.join(","), colorBy, pref, turns?.map((t) => `${t.n}:${t.apex_m}`).join(","), onEditSectors ? "edit" : JSON.stringify(layout?.sectors || [])]);
 
   useEffect(() => {
     const map = mapRef.current;
     if (!map) return;
     gateLayers.current.forEach((l) => map.removeLayer(l));
     gateLayers.current = [];
-    const g = layout?.sf_gate;
-    if (!g?.a || !g?.b) return;
-    const line = L.polyline(
-      [
-        [g.a.lat, g.a.lon],
-        [g.b.lat, g.b.lon],
-      ],
-      { color: "#e6edf3", weight: 5, dashArray: "4 3" }
-    ).addTo(map);
-    gateLayers.current.push(line);
-    const mid: L.LatLngExpression = [(g.a.lat + g.b.lat) / 2, (g.a.lon + g.b.lon) / 2];
-    const editable = !!editRef.current;
-    if (editable) {
-      const icon = L.divIcon({
-        className: "sf-handle",
-        html: '<div class="sf-handle-dot"></div>',
-        iconSize: [18, 18],
-        iconAnchor: [9, 9],
-      });
-      const marker = L.marker(mid, { draggable: true, icon, zIndexOffset: 1200 }).addTo(map);
-      const applyAt = (ll: L.LatLng) => {
-        const snapped = snapToTraces(data, ll.lat, ll.lng, Number(g.heading) || 0);
-        const next = gateFromPoint(snapped.lat, snapped.lon, snapped.heading);
-        line.setLatLngs([
-          [next.a.lat, next.a.lon],
-          [next.b.lat, next.b.lon],
-        ]);
-        marker.setLatLng([(next.a.lat + next.b.lat) / 2, (next.a.lon + next.b.lon) / 2]);
-        return next;
-      };
-      marker.on("drag", (e) => {
-        applyAt((e.target as L.Marker).getLatLng());
-      });
-      marker.on("dragend", (e) => {
-        const next = applyAt((e.target as L.Marker).getLatLng());
-        editRef.current?.(next);
-      });
-      gateLayers.current.push(marker);
-    } else {
-      gateLayers.current.push(
-        L.tooltip({ permanent: true, direction: "center", className: "" }).setLatLng(mid).setContent("S/F").addTo(map)
-      );
-    }
+    const stage = (layout?.timing_mode || "loop") === "stage";
+    const add = (g: Gate | null | undefined, color: string, label: string, dotClass: string, onEdit?: (g: Gate) => void) => {
+      if (!g?.a || !g?.b) return;
+      const line = L.polyline(
+        [
+          [g.a.lat, g.a.lon],
+          [g.b.lat, g.b.lon],
+        ],
+        { color, weight: 5, dashArray: "4 3" }
+      ).addTo(map);
+      gateLayers.current.push(line);
+      const mid: L.LatLngExpression = [(g.a.lat + g.b.lat) / 2, (g.a.lon + g.b.lon) / 2];
+      if (onEdit) {
+        const icon = L.divIcon({
+          className: "sf-handle",
+          html: `<div class="sf-handle-dot${dotClass ? ` ${dotClass}` : ""}"></div>`,
+          iconSize: [18, 18],
+          iconAnchor: [9, 9],
+        });
+        const marker = L.marker(mid, { draggable: true, icon, zIndexOffset: 1200 }).addTo(map);
+        marker.bindTooltip(label, { permanent: true, direction: "top", offset: [0, -12], className: "sector-label" });
+        const applyAt = (ll: L.LatLng) => {
+          const snapped = snapToTraces(data, ll.lat, ll.lng, Number(g.heading) || 0);
+          const next = gateFromPoint(snapped.lat, snapped.lon, snapped.heading);
+          line.setLatLngs([
+            [next.a.lat, next.a.lon],
+            [next.b.lat, next.b.lon],
+          ]);
+          marker.setLatLng([(next.a.lat + next.b.lat) / 2, (next.a.lon + next.b.lon) / 2]);
+          return next;
+        };
+        marker.on("drag", (e) => {
+          applyAt((e.target as L.Marker).getLatLng());
+        });
+        marker.on("dragend", (e) => {
+          const next = applyAt((e.target as L.Marker).getLatLng());
+          onEdit(next);
+        });
+        gateLayers.current.push(marker);
+      } else {
+        gateLayers.current.push(
+          L.tooltip({ permanent: true, direction: "center", className: "" }).setLatLng(mid).setContent(label).addTo(map)
+        );
+      }
+    };
+    add(layout?.sf_gate, "#e6edf3", stage ? "A" : "S/F", "", editRef.current);
+    if (stage) add(layout?.finish_gate, "#ff7931", "B", "finish", editFinishRef.current);
     return () => {
       gateLayers.current.forEach((l) => map.removeLayer(l));
       gateLayers.current = [];
     };
-  }, [data, layout?.sf_gate]);
+  }, [data, layout?.sf_gate, layout?.finish_gate, layout?.timing_mode]);
 
   useEffect(() => {
     const map = mapRef.current;
@@ -2165,12 +2409,12 @@ function TrackMap({
 
   useEffect(() => {
     const map = mapRef.current;
-    if (!map || !placingSplit) return;
+    if (!map || !placingKind) return;
     const onClick = (e: L.LeafletMouseEvent) => {
       if (!placingRef.current) return;
       L.DomEvent.stop(e);
       const snapped = snapToTraces(dataRef.current, e.latlng.lat, e.latlng.lng, 0);
-      placeSplitRef.current?.(gateFromPoint(snapped.lat, snapped.lon, snapped.heading));
+      placeRef.current?.(gateFromPoint(snapped.lat, snapped.lon, snapped.heading));
     };
     map.on("click", onClick);
     const el = map.getContainer();
@@ -2180,7 +2424,7 @@ function TrackMap({
       map.off("click", onClick);
       el.style.cursor = prev;
     };
-  }, [placingSplit, data]);
+  }, [placingKind, data]);
 
   useEffect(() => {
     const map = mapRef.current;
@@ -2270,7 +2514,7 @@ function TrackMap({
 
   return (
     <div
-      className={`map-wrap${placingSplit ? " placing-split" : ""}`}
+      className={`map-wrap${placingKind ? " placing-split" : ""}`}
       onContextMenu={(e) => {
         e.preventDefault();
         onUnpin?.();
@@ -2289,11 +2533,11 @@ function TrackMap({
           <div className="map-legend-bar" />
           <div className="map-legend-ends">
             <span>
-              {fmtNum(legend.min, legend.unit === "mph" || legend.unit === "%" ? 0 : 1)}
+              {fmtNum(legend.min, legend.unit === "mph" || legend.unit === "km/h" || legend.unit === "%" ? 0 : 1)}
               {legend.unit ? ` ${legend.unit}` : ""}
             </span>
             <span>
-              {fmtNum(legend.max, legend.unit === "mph" || legend.unit === "%" ? 0 : 1)}
+              {fmtNum(legend.max, legend.unit === "mph" || legend.unit === "km/h" || legend.unit === "%" ? 0 : 1)}
               {legend.unit ? ` ${legend.unit}` : ""}
             </span>
           </div>
@@ -2502,7 +2746,7 @@ function sectorDigits(unit: string, key: string): number {
   const u = (unit || "").toLowerCase();
   if (u === "%" || u === "rpm" || key === "rpm") return 0;
   if (u === "g" || u === "λ" || key === "afr") return 2;
-  if (u === "mph" || u === "psi") return 1;
+  if (u === "mph" || u === "psi" || u === "km/h" || u === "bar" || u === "kpa") return 1;
   return 1;
 }
 
@@ -2517,6 +2761,7 @@ function SplitsTab({
   colorFor: (id: number) => string;
   channels: Channel[];
 }) {
+  const pref = useUnitPref();
   const [data, setData] = useState<any>(null);
   const [chKey, setChKey] = useState("gps_speed_mph");
   const [stat, setStat] = useState<SectorStat>("min");
@@ -2594,6 +2839,11 @@ function SplitsTab({
         <span className="muted" style={{ fontSize: 12 }}>
           Fastest complete half of each official sector, summed. TIME = sum of sectors.
         </span>
+        {laps.some((l) => selected.includes(l.id) && l.sectors_source === "equal") && (
+          <span className="err">
+            Sector beacons were not crossed on a selected lap. Those splits are equal thirds, not the track's sectors. Place splits on the Track tab.
+          </span>
+        )}
       </div>
       <table className="split-table card">
         <thead>
@@ -2680,9 +2930,12 @@ function SplitsTab({
               value={chKey}
               onChange={(e) => setChKey(e.target.value)}
             >
-              {(channels.length ? channels : [{ key: "gps_speed_mph", name: "GPS Speed", unit: "mph" }]).map((c) => (
-                <option key={c.key} value={c.key}>{c.name}{c.unit ? ` (${c.unit})` : ""}</option>
-              ))}
+              {(channels.length ? channels : [{ key: "gps_speed_mph", name: "GPS Speed", unit: "mph" }]).map((c) => {
+                const shown = displayChannel(c, pref);
+                return (
+                <option key={c.key} value={c.key}>{shown.name}{shown.unit ? ` (${shown.unit})` : ""}</option>
+                );
+              })}
             </select>
             <span className="hist-seg">
               {(["min", "max", "avg"] as SectorStat[]).map((s) => (
@@ -2694,8 +2947,10 @@ function SplitsTab({
           </div>
           {(() => {
             const meta = channels.find((c) => c.key === chKey);
-            const unit = meta?.unit || "";
+            const shown = meta ? displayChannel(meta, pref) : undefined;
+            const unit = shown?.unit || meta?.unit || "";
             const digits = sectorDigits(unit, chKey);
+            const toDisp = (v: number | null) => convertMaybe(v, meta?.unit || "", unit);
             const label = `${stat} ${meta?.name || chKey}`;
             const betterHigh = chKey.includes("speed") && stat === "min";
             const bestOf = (idx: number) => {
@@ -2741,12 +2996,14 @@ function SplitsTab({
                         const v = sectorStatVal(s, chKey, stat);
                         const r = refVal(idx);
                         const best = bestOf(idx);
-                        const delta = v != null && r != null ? v - r : null;
+                        const dv = toDisp(v);
+                        const dr = toDisp(r);
+                        const delta = dv != null && dr != null ? dv - dr : null;
                         const good = betterHigh && delta != null ? delta > 0.05 : null;
                         return (
                           <td key={idx} title={s?.d0_m != null ? `${fmtNum(s.d0_m, 0)}–${fmtNum(s.d1_m, 0)} m` : undefined}>
                             <div className={best != null && v != null && v === best ? "purple" : ""}>
-                              {v == null ? "—" : fmtNum(v, digits)}
+                              {dv == null ? "—" : fmtNum(dv, digits)}
                             </div>
                             {delta != null && l.id !== refLap?.id && (
                               <div
@@ -2991,19 +3248,32 @@ function GateBar({
   channels,
   onPreset,
   onGates,
+  unitPref,
+  onUnitPref,
 }: {
   preset: GatePreset;
   gates: DataGate[];
   channels: Channel[];
   onPreset: (p: GatePreset) => void;
   onGates: (g: DataGate[]) => void;
+  unitPref: UnitPref;
+  onUnitPref: (p: UnitPref) => void;
 }) {
   function pick(id: GatePreset) {
     onPreset(id);
     const spec = GATE_PRESETS.find((p) => p.id === id);
     if (!spec) return;
-    if (id === "off") onGates([]);
-    else onGates(spec.gates.map((g) => ({ ...g })));
+    if (id === "off") {
+      onGates([]);
+      return;
+    }
+    if (id === "speed") {
+      const metric = unitPref === "metric";
+      const hasKmh = channels.some((c) => c.key === "gps_speed");
+      onGates([{ channel: metric && hasKmh ? "gps_speed" : "gps_speed_mph", op: ">=", value: metric ? 130 : 80 }]);
+      return;
+    }
+    onGates(spec.gates.map((g) => ({ ...g })));
   }
   function patch(i: number, next: Partial<DataGate>) {
     onGates(gates.map((g, j) => (j === i ? { ...g, ...next } : g)));
@@ -3018,6 +3288,15 @@ function GateBar({
   const active = preset !== "off" && gates.length > 0;
   return (
     <div className={`gatebar${active ? " on" : ""}`}>
+      <span className="muted">Units</span>
+      <span className="hist-seg">
+        <button type="button" className={unitPref === "metric" ? "primary" : "ghost"} onClick={() => onUnitPref("metric")}>
+          Metric
+        </button>
+        <button type="button" className={unitPref === "imperial" ? "primary" : "ghost"} onClick={() => onUnitPref("imperial")}>
+          Imperial
+        </button>
+      </span>
       <span className="muted">Gate</span>
       <select className="kind-select" value={preset} onChange={(e) => pick(e.target.value as GatePreset)}>
         {GATE_PRESETS.map((p) => (
@@ -3079,6 +3358,7 @@ function OverlayScatter({
   markA,
   markB,
   onUnpin,
+  refId,
 }: {
   selected: number[];
   channels: Channel[];
@@ -3090,10 +3370,15 @@ function OverlayScatter({
   markA?: number | null;
   markB?: number | null;
   onUnpin?: () => void;
+  refId?: number | null;
 }) {
+  const pref = useUnitPref();
   const [xKey, setXKey] = useState("gps_lat_g");
   const [yKey, setYKey] = useState("gps_long_g");
+  const [flipX, setFlipX] = useState(false);
+  const [flipY, setFlipY] = useState(false);
   const [data, setData] = useState<any>(null);
+  const gDefaulted = useRef(false);
   const canvas = useRef<HTMLCanvasElement>(null);
   const hoverDist = useRef<number | null>(null);
   const drawRef = useRef<() => void>(() => {});
@@ -3116,6 +3401,11 @@ function OverlayScatter({
     const keys = new Set(channels.map((c) => c.key));
     if (keys.size && !keys.has(xKey)) setXKey(channels[0]?.key || xKey);
     if (keys.size && !keys.has(yKey)) setYKey(channels[1]?.key || channels[0]?.key || yKey);
+    if (!gDefaulted.current && keys.has("lat_g") && keys.has("long_g")) {
+      setXKey("lat_g");
+      setYKey("long_g");
+      gDefaulted.current = true;
+    }
   }, [channels]);
 
   const abWin =
@@ -3130,9 +3420,10 @@ function OverlayScatter({
         gates: gates || undefined,
         distMin: scatterWin?.[0],
         distMax: scatterWin?.[1],
+        refLapId: refId,
       }).then(setData).catch(() => setData(null));
     } else setData(null);
-  }, [selected.join(","), xKey, yKey, gates, scatterWin?.[0], scatterWin?.[1]]);
+  }, [selected.join(","), xKey, yKey, gates, scatterWin?.[0], scatterWin?.[1], refId]);
 
   useEffect(() => {
     hoverDist.current = cursorDist;
@@ -3144,8 +3435,14 @@ function OverlayScatter({
     const ctx = c.getContext("2d");
     if (!ctx) return;
     const pad = 36;
-    const xName = channelAxisLabel(channels.find((ch) => ch.key === xKey), xKey);
-    const yName = channelAxisLabel(channels.find((ch) => ch.key === yKey), yKey);
+    const xCh = channels.find((ch) => ch.key === xKey);
+    const yCh = channels.find((ch) => ch.key === yKey);
+    const xNative = xCh?.unit || "";
+    const yNative = yCh?.unit || "";
+    const xDisp = preferredUnit(xNative, pref);
+    const yDisp = preferredUnit(yNative, pref);
+    const xName = channelAxisLabel(xCh ? displayChannel(xCh, pref) : undefined, xKey);
+    const yName = channelAxisLabel(yCh ? displayChannel(yCh, pref) : undefined, yKey);
     type View = { x0: number; x1: number; y0: number; y1: number };
     const canvasXY = (e: { clientX: number; clientY: number }) => {
       const rect = c.getBoundingClientRect();
@@ -3154,10 +3451,16 @@ function OverlayScatter({
         y: (e.clientY - rect.top) * (c.height / Math.max(rect.height, 1)),
       };
     };
-    const toData = (mx: number, my: number, v: View, w: number, h: number) => ({
-      x: v.x0 + ((mx - pad) / Math.max(w - pad * 2, 1)) * (v.x1 - v.x0),
-      y: v.y0 + ((h - pad - my) / Math.max(h - pad * 2, 1)) * (v.y1 - v.y0),
-    });
+    const toData = (mx: number, my: number, v: View, w: number, h: number) => {
+      let tx = (mx - pad) / Math.max(w - pad * 2, 1);
+      let ty = (h - pad - my) / Math.max(h - pad * 2, 1);
+      if (flipX) tx = 1 - tx;
+      if (flipY) ty = 1 - ty;
+      return {
+        x: v.x0 + tx * (v.x1 - v.x0),
+        y: v.y0 + ty * (v.y1 - v.y0),
+      };
+    };
     const clampView = (next: View): View | null => {
       const fit = fitRef.current;
       if (!fit) return next;
@@ -3212,8 +3515,8 @@ function OverlayScatter({
         for (let i = 0; i < s.x.length; i++) {
           if (dist[i] != null && !inWin(dist[i])) continue;
           if (!Number.isFinite(s.x[i]) || !Number.isFinite(s.y[i])) continue;
-          xs.push(s.x[i]);
-          ys.push(s.y[i]);
+          xs.push(convertValue(s.x[i], xNative, xDisp));
+          ys.push(convertValue(s.y[i], yNative, yDisp));
         }
         return { ...s, x: xs, y: ys };
       });
@@ -3231,8 +3534,14 @@ function OverlayScatter({
       const fit: View = { x0: -limX, x1: limX, y0: -limY, y1: limY };
       fitRef.current = fit;
       const v = viewRef.current || fit;
-      const sx = (val: number) => pad + ((val - v.x0) / (v.x1 - v.x0 || 1)) * (w - pad * 2);
-      const sy = (val: number) => h - pad - ((val - v.y0) / (v.y1 - v.y0 || 1)) * (h - pad * 2);
+      const sx = (val: number) => {
+        const t = (val - v.x0) / (v.x1 - v.x0 || 1);
+        return pad + (flipX ? 1 - t : t) * (w - pad * 2);
+      };
+      const sy = (val: number) => {
+        const t = (val - v.y0) / (v.y1 - v.y0 || 1);
+        return h - pad - (flipY ? 1 - t : t) * (h - pad * 2);
+      };
       ctx.save();
       ctx.beginPath();
       ctx.rect(pad, pad, w - pad * 2, h - pad * 2);
@@ -3373,11 +3682,13 @@ function OverlayScatter({
       const v = drag.view;
       const plotW = Math.max(c.width - pad * 2, 1);
       const plotH = Math.max(c.height - pad * 2, 1);
+      const xDir = flipX ? 1 : -1;
+      const yDir = flipY ? -1 : 1;
       viewRef.current = clampView({
-        x0: v.x0 - (dxPx / plotW) * (v.x1 - v.x0),
-        x1: v.x1 - (dxPx / plotW) * (v.x1 - v.x0),
-        y0: v.y0 + (dyPx / plotH) * (v.y1 - v.y0),
-        y1: v.y1 + (dyPx / plotH) * (v.y1 - v.y0),
+        x0: v.x0 + xDir * (dxPx / plotW) * (v.x1 - v.x0),
+        x1: v.x1 + xDir * (dxPx / plotW) * (v.x1 - v.x0),
+        y0: v.y0 + yDir * (dyPx / plotH) * (v.y1 - v.y0),
+        y1: v.y1 + yDir * (dyPx / plotH) * (v.y1 - v.y0),
       });
       draw();
     };
@@ -3402,7 +3713,7 @@ function OverlayScatter({
       c.removeEventListener("pointerup", onPointerUp);
       c.removeEventListener("pointercancel", onPointerUp);
     };
-  }, [data, xKey, yKey, cursorDist, channels, xRange, theme, gates, markA, markB, scatterWin?.[0], scatterWin?.[1]]);
+  }, [data, xKey, yKey, cursorDist, channels, xRange, theme, gates, markA, markB, scatterWin?.[0], scatterWin?.[1], pref, flipX, flipY]);
 
   useEffect(() => {
     if (!cursorLiveRef) return;
@@ -3417,22 +3728,42 @@ function OverlayScatter({
 
   return (
     <>
-      <h3>
-        Scatter
-        <span className="toolbar-inline">
+      <h3 className="scatter-head">
+        <span className="scatter-head-title">
+          Scatter
           {abWin ? <span className="pill">A–B</span> : null}
           {gates ? <span className="pill">gated</span> : null}
-          <select value={xKey} onChange={(e) => setXKey(e.target.value)} className="kind-select">
+        </span>
+        <span className="scatter-head-controls">
+          <select value={xKey} onChange={(e) => setXKey(e.target.value)} className="kind-select" title="X axis">
             {channels.map((c) => (
               <option key={c.key} value={c.key}>{c.name}</option>
             ))}
           </select>
           <span className="muted">vs</span>
-          <select value={yKey} onChange={(e) => setYKey(e.target.value)} className="kind-select">
+          <select value={yKey} onChange={(e) => setYKey(e.target.value)} className="kind-select" title="Y axis">
             {channels.map((c) => (
               <option key={c.key} value={c.key}>{c.name}</option>
             ))}
           </select>
+          <span className="scatter-flips">
+            <button
+              type="button"
+              className={flipX ? "primary" : "ghost"}
+              title="Mirror left and right"
+              onClick={() => setFlipX((f) => !f)}
+            >
+              Flip X
+            </button>
+            <button
+              type="button"
+              className={flipY ? "primary" : "ghost"}
+              title="Mirror up and down"
+              onClick={() => setFlipY((f) => !f)}
+            >
+              Flip Y
+            </button>
+          </span>
         </span>
       </h3>
       <canvas
@@ -3461,6 +3792,7 @@ function HistTab({
   laps,
   xRange,
   gates,
+  refId,
 }: {
   selected: number[];
   channels: Channel[];
@@ -3468,6 +3800,7 @@ function HistTab({
   laps: Lap[];
   xRange: [number, number] | null;
   gates?: string;
+  refId?: number | null;
 }) {
   const [ch, setCh] = useState("gps_speed_mph");
   const [bins, setBins] = useState(24);
@@ -3483,7 +3816,11 @@ function HistTab({
   colorRef.current = colorFor;
   const theme = useTheme();
 
+  const pref = useUnitPref();
   const chMeta = channels.find((c) => c.key === ch);
+  const shown = chMeta ? displayChannel(chMeta, pref) : undefined;
+  const nativeU = chMeta?.unit || "";
+  const dispU = shown?.unit || nativeU;
   const windowed = useZoom && xRange != null;
 
   useEffect(() => {
@@ -3495,15 +3832,18 @@ function HistTab({
       setData(null);
       return;
     }
-    const opts: { bins: number; distMin?: number; distMax?: number; threshold?: number | null; gates?: string } = { bins };
+    const opts: { bins: number; distMin?: number; distMax?: number; threshold?: number | null; gates?: string; refLapId?: number | null } = { bins };
     if (windowed && xRange) {
       opts.distMin = xRange[0];
       opts.distMax = xRange[1];
     }
-    if (threshold !== "" && Number.isFinite(Number(threshold))) opts.threshold = Number(threshold);
+    if (threshold !== "" && Number.isFinite(Number(threshold))) {
+      opts.threshold = convertValue(Number(threshold), dispU, nativeU);
+    }
     if (gates) opts.gates = gates;
+    if (refId) opts.refLapId = refId;
     api.histogram(selected, ch, opts).then(setData).catch(() => setData(null));
-  }, [selected.join(","), ch, bins, windowed, xRange?.[0], xRange?.[1], threshold, gates]);
+  }, [selected.join(","), ch, bins, windowed, xRange?.[0], xRange?.[1], threshold, gates, nativeU, dispU, refId]);
 
   useEffect(() => {
     const c = canvas.current;
@@ -3516,7 +3856,7 @@ function HistTab({
       const pt = plotTheme();
       ctx.fillStyle = pt.bg;
       ctx.fillRect(0, 0, w, h);
-      const edges: number[] = data?.edges || [];
+      const edges: number[] = (data?.edges || []).map((v: number) => convertValue(v, nativeU, dispU));
       const series = data?.series || [];
       const n = edges.length - 1;
       if (n < 1 || !series.length) {
@@ -3590,8 +3930,8 @@ function HistTab({
         const text = fmtNum(v, Math.abs(v) >= 100 ? 0 : 1);
         ctx.fillText(text, x - ctx.measureText(text).width / 2, h - 14);
       }
-      const unit = chMeta?.unit ? ` (${chMeta.unit})` : "";
-      const xTitle = `${chMeta?.name || ch}${unit}`;
+      const unit = dispU ? ` (${dispU})` : "";
+      const xTitle = `${shown?.name || chMeta?.name || ch}${unit}`;
       ctx.fillText(xTitle, padL + (plotW - ctx.measureText(xTitle).width) / 2, h - 2);
       if (hover != null && hover >= 0 && hover < n) {
         const lo = edges[hover];
@@ -3654,10 +3994,10 @@ function HistTab({
       c.removeEventListener("mousemove", onMove);
       c.removeEventListener("mouseleave", onLeave);
     };
-  }, [data, mode, ch, chMeta, laps, theme]);
+  }, [data, mode, ch, chMeta, shown, nativeU, dispU, laps, theme]);
 
   const thrNum = threshold === "" ? null : Number(threshold);
-  const unit = chMeta?.unit || "";
+  const unit = dispU;
 
   return (
     <div className="page hist-page" data-export-root>
@@ -3667,9 +4007,12 @@ function HistTab({
       </p>
       <div className="toolbar-inline hist-toolbar">
         <select value={ch} onChange={(e) => setCh(e.target.value)}>
-          {channels.map((c) => (
-            <option key={c.key} value={c.key}>{c.name}</option>
-          ))}
+          {channels.map((c) => {
+            const s = displayChannel(c, pref);
+            return (
+            <option key={c.key} value={c.key}>{s.name}{s.unit ? ` (${s.unit})` : ""}</option>
+            );
+          })}
         </select>
         <label className="muted">
           Bins{" "}
@@ -3736,10 +4079,10 @@ function HistTab({
                 <span className="muted">{fmtLap(lap?.time_ms)}</span>
               </div>
               <div className="muted">
-                mean {fmtNum(st.mean, 1)} · median {fmtNum(st.median, 1)}
+                mean {fmtNum(convertMaybe(st.mean, nativeU, dispU), 1)} · median {fmtNum(convertMaybe(st.median, nativeU, dispU), 1)}
               </div>
               <div className="muted">
-                min {fmtNum(st.min, 1)} · max {fmtNum(st.max, 1)}
+                min {fmtNum(convertMaybe(st.min, nativeU, dispU), 1)} · max {fmtNum(convertMaybe(st.max, nativeU, dispU), 1)}
               </div>
               {above != null && thrNum != null && (
                 <div>
@@ -4055,14 +4398,15 @@ function AfrMapTab({
       setData(null);
       return;
     }
-    const opts: { gates?: string; distMin?: number; distMax?: number } = {};
+    const opts: { gates?: string; distMin?: number; distMax?: number; refLapId?: number | null } = {};
     if (gates) opts.gates = gates;
     if (windowed && xRange) {
       opts.distMin = xRange[0];
       opts.distMax = xRange[1];
     }
+    if (refId) opts.refLapId = refId;
     api.afrMap(selected, opts).then(setData).catch(() => setData(null));
-  }, [selected.join(","), gates, windowed, xRange?.[0], xRange?.[1]]);
+  }, [selected.join(","), gates, windowed, xRange?.[0], xRange?.[1], refId]);
 
   const refLap =
     laps.find((l) => l.id === refId && selected.includes(l.id)) ||
@@ -4425,6 +4769,7 @@ function AfrHeatmap({
 }
 
 function ReportTab({ selected, channels, gates }: { selected: number[]; channels: Channel[]; gates?: string }) {
+  const pref = useUnitPref();
   const keys = ["gps_speed_mph", "rpm", "tps", "brake", "gps_long_g", "gps_lat_g", "oil_temp", "coolant", "afr", "battery"];
   const [rows, setRows] = useState<any[]>([]);
   useEffect(() => {
@@ -4443,9 +4788,13 @@ function ReportTab({ selected, channels, gates }: { selected: number[]; channels
         <thead>
           <tr>
             <th>Lap</th>
-            {keys.map((k) => (
-              <th key={k} colSpan={3}>{channels.find((c) => c.key === k)?.name || k}</th>
-            ))}
+            {keys.map((k) => {
+              const ch = channels.find((c) => c.key === k);
+              const shown = ch ? displayChannel(ch, pref) : undefined;
+              return (
+              <th key={k} colSpan={3}>{shown?.name || ch?.name || k}{shown?.unit ? ` (${shown.unit})` : ""}</th>
+              );
+            })}
           </tr>
           <tr>
             <th />
@@ -4464,11 +4813,14 @@ function ReportTab({ selected, channels, gates }: { selected: number[]; channels
               <td>L{r.number}</td>
               {keys.map((k) => {
                 const s = r.channels?.[k];
+                const ch = channels.find((c) => c.key === k);
+                const shown = ch ? displayChannel(ch, pref) : undefined;
+                const toD = (v: number | null | undefined) => convertMaybe(v ?? null, ch?.unit || "", shown?.unit || "");
                 return (
                   <>
-                    <td key={k + "n"}>{s ? fmtNum(s.min) : "—"}</td>
-                    <td key={k + "x"}>{s ? fmtNum(s.max) : "—"}</td>
-                    <td key={k + "a"}>{s ? fmtNum(s.avg) : "—"}</td>
+                    <td key={k + "n"}>{s ? fmtNum(toD(s.min)) : "—"}</td>
+                    <td key={k + "x"}>{s ? fmtNum(toD(s.max)) : "—"}</td>
+                    <td key={k + "a"}>{s ? fmtNum(toD(s.avg)) : "—"}</td>
                   </>
                 );
               })}
@@ -4495,30 +4847,60 @@ function TrackTab({
 }) {
   const session = sessions[0];
   const [gate, setGate] = useState<Gate | null>(layout.sf_gate);
+  const [finish, setFinish] = useState<Gate | null>(layout.finish_gate);
+  const [timingMode, setTimingMode] = useState<"loop" | "stage">(layout.timing_mode === "stage" ? "stage" : "loop");
   const [sectors, setSectors] = useState<Gate[]>(layout.sectors || []);
   const [selectedSplit, setSelectedSplit] = useState<number | null>(null);
-  const [placing, setPlacing] = useState(false);
+  const [placingKind, setPlacingKind] = useState<"split" | "start" | "finish" | null>(null);
   const [equalN, setEqualN] = useState(3);
   const [msg, setMsg] = useState("");
   const [saveState, setSaveState] = useState<"idle" | "saving" | "recalc" | "saved">("idle");
-  const placingRef = useRef(false);
+  const [trackLayouts, setTrackLayouts] = useState<Layout[]>([]);
+  const placingRef = useRef<"split" | "start" | "finish" | null>(null);
+  const stage = timingMode === "stage";
   useEffect(() => {
     setGate(layout.sf_gate);
+    setFinish(layout.finish_gate);
+    setTimingMode(layout.timing_mode === "stage" ? "stage" : "loop");
     setSectors(layout.sectors || []);
     setSelectedSplit(null);
-    placingRef.current = false;
-    setPlacing(false);
+    placingRef.current = null;
+    setPlacingKind(null);
   }, [layout.id]);
   useEffect(() => {
-    if (!placing) return;
+    let cancel = false;
+    api.tracks()
+      .then((ts) => {
+        if (cancel) return;
+        const t = ts.find((x) => x.layouts.some((l) => l.id === layout.id));
+        setTrackLayouts(t?.layouts || []);
+      })
+      .catch(() => {});
+    return () => {
+      cancel = true;
+    };
+  }, [layout.id]);
+  useEffect(() => {
+    if (!placingKind) return;
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== "Escape") return;
-      placingRef.current = false;
-      setPlacing(false);
+      placingRef.current = null;
+      setPlacingKind(null);
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [placing]);
+  }, [placingKind]);
+
+  function startPlacing(kind: "split" | "start" | "finish") {
+    if (placingKind === kind) {
+      placingRef.current = null;
+      setPlacingKind(null);
+      return;
+    }
+    placingRef.current = kind;
+    setPlacingKind(kind);
+    setMsg("");
+  }
 
   function applySectors(next: Gate[], keep?: Gate) {
     const sorted = sortSectors(mapData, next);
@@ -4534,9 +4916,6 @@ function TrackTab({
   }
 
   function addSplit(g: Gate) {
-    if (!placingRef.current) return;
-    placingRef.current = false;
-    setPlacing(false);
     if (sectors.length >= MAX_SPLITS) {
       setMsg(`Max ${MAX_SPLITS + 1} sectors (${MAX_SPLITS} splits).`);
       return;
@@ -4549,26 +4928,79 @@ function TrackTab({
     setMsg("");
   }
 
+  function onPlace(g: Gate) {
+    const kind = placingRef.current;
+    placingRef.current = null;
+    setPlacingKind(null);
+    if (kind === "start") {
+      setGate(g);
+      setMsg(stage ? "Start (A) placed. Save to retime." : "S/F placed. Save to rewrite laps.");
+      return;
+    }
+    if (kind === "finish") {
+      setFinish(g);
+      setMsg("Finish (B) placed. Save to retime.");
+      return;
+    }
+    if (kind === "split") addSplit(g);
+  }
+
   function removeSplit(i: number) {
     applySectors(sectors.filter((_, j) => j !== i));
     setSelectedSplit(null);
   }
 
   async function propose() {
+    if (stage) {
+      const ends = proposeEndsFromTraces(mapData);
+      if (!ends) {
+        setMsg("Need GPS on the map to propose A and B.");
+        return;
+      }
+      setGate(ends.start);
+      setFinish(ends.finish);
+      setMsg("Proposed A and B from the ends of this GPS. Drag onto the bridge and gantry (or stage start/finish), then Save.");
+      return;
+    }
     const g: any = await api.proposeSf(layout.id, session.id);
     setGate(g.sf_gate);
-    setMsg("Proposed start/finish from this session. Save to rewrite laps.");
-    onSaved();
+    setMsg("Proposed start/finish from this GPS. Nothing is saved yet — drag it if needed, then Save to rewrite laps.");
+  }
+
+  async function switchLayout(id: number) {
+    if (id === layout.id || saveState === "saving" || saveState === "recalc") return;
+    setSaveState("recalc");
+    setMsg("Switching layout…");
+    try {
+      await api.patchSession(session.id, { layout_id: id });
+      await api.reprocess(session.id);
+      await onSaved();
+      setMsg("Layout switched. Place gates if this is point-to-point, then Save + reprocess.");
+      setSaveState("idle");
+    } catch (e: any) {
+      setSaveState("idle");
+      setMsg(e.message || String(e));
+    }
   }
 
   async function save() {
-    if (!gate || saveState === "saving" || saveState === "recalc") return;
+    if (saveState === "saving" || saveState === "recalc") return;
+    if (!gate) {
+      setMsg(stage ? "Place start (A) first." : "Place S/F first.");
+      return;
+    }
+    if (stage && !finish) {
+      setMsg("Place finish (B) first.");
+      return;
+    }
     setSaveState("saving");
     setMsg("Saving track…");
     try {
       const saved: any = await api.patchLayout(layout.id, {
         sf_gate: cleanGate(gate),
-        sectors: sectors.map(cleanGate),
+        finish_gate: stage && finish ? cleanGate(finish) : null,
+        timing_mode: timingMode,
+        sectors: sectors.map((g) => cleanGate(g)),
       });
       const ids: number[] = Array.isArray(saved?.session_ids) && saved.session_ids.length
         ? saved.session_ids.map((n: any) => Number(n)).filter((n: number) => Number.isFinite(n))
@@ -4592,13 +5024,14 @@ function TrackTab({
       }
       if (!refreshed) await onSaved();
       const nsec = sectors.length + 1;
+      const modeBit = stage ? "A→B" : "loop S/F";
       const splitBit = sectors.length
         ? `${sectors.length} split${sectors.length === 1 ? "" : "s"} (${nsec} sectors)`
         : "equal thirds";
       setMsg(
         failed
-          ? `Saved ${splitBit}. Retimed ${ordered.length - failed} of ${ordered.length} sessions (${failed} failed).`
-          : `Saved ${splitBit}. Retimed ${ordered.length} session${ordered.length === 1 ? "" : "s"}.`
+          ? `Saved ${modeBit}, ${splitBit}. Retimed ${ordered.length - failed} of ${ordered.length} sessions (${failed} failed).`
+          : `Saved ${modeBit}, ${splitBit}. Retimed ${ordered.length} session${ordered.length === 1 ? "" : "s"}.`
       );
       setSaveState("saved");
       window.setTimeout(() => setSaveState((s) => (s === "saved" ? "idle" : s)), 2500);
@@ -4611,6 +5044,18 @@ function TrackTab({
   const turnN = layout.turns?.count;
   const nsec = sectors.length ? sectors.length + 1 : 3;
 
+  const canSave = stage ? !!(gate && finish) : !!gate;
+  const placeHint =
+    placingKind === "start"
+      ? stage
+        ? "Click the GPS line to place start (A). Esc cancels."
+        : "Click the GPS line to place S/F. Esc cancels."
+      : placingKind === "finish"
+        ? "Click the GPS line to place finish (B). Esc cancels."
+        : placingKind === "split"
+          ? "Click the GPS line to place a split. Esc cancels."
+          : "";
+
   return (
     <div className="page" style={{ display: "grid", gridTemplateColumns: "1fr 320px", gap: 12, height: "100%" }}>
       <div className="panel" style={{ height: "100%" }}>
@@ -4619,13 +5064,14 @@ function TrackTab({
         </h3>
         <TrackMap
           data={mapData}
-          layout={{ ...layout, sf_gate: gate, sectors }}
+          layout={{ ...layout, sf_gate: gate, finish_gate: finish, timing_mode: timingMode, sectors }}
           selected={mapData.map((d: any) => d.lap_id)}
           colorFor={colorFor}
           cursorDist={0}
           onCursor={() => {}}
           onEditGate={setGate}
-          placingSplit={placing}
+          onEditFinish={setFinish}
+          placingKind={placingKind}
           selectedSplit={selectedSplit}
           onEditSectors={(next) => {
             let moved: Gate | undefined;
@@ -4641,20 +5087,95 @@ function TrackTab({
             applySectors(next, moved);
           }}
           onSelectSplit={setSelectedSplit}
-          onPlaceSplit={addSplit}
+          onPlace={onPlace}
         />
       </div>
       <div className="card track-editor">
         <p className="muted">
-          White handle is S/F. Gold handles are sector splits (end of S1, S2, …). Drag along the GPS line; they snap
-          and stay perpendicular. Save rewrites laps for every session at this layout.
+          {stage
+            ? "White handle is start (A), orange is finish (B). Time is A then the next B — rally stages, hillclimbs, Nordschleife bridge-to-gantry. Gold handles are intermediate splits."
+            : "White handle is S/F. Gold handles are sector splits (end of S1, S2, …). Drag along the GPS line; they snap and stay perpendicular."}{" "}
+          Save rewrites every session at this layout.
         </p>
+        {layout.venue === "User" && (
+          <label className="muted" style={{ display: "block", marginTop: 8 }}>
+            Track name
+            <input
+              style={{ marginLeft: 8 }}
+              defaultValue={layout.track_name || ""}
+              key={layout.track_name || layout.id}
+              onBlur={async (e) => {
+                const name = e.target.value.trim();
+                if (!name || name === layout.track_name) return;
+                try {
+                  await api.patchLayout(layout.id, { track_name: name });
+                  await onSaved();
+                  setMsg(`Renamed to ${name}.`);
+                } catch (ex: any) {
+                  setMsg(ex.message || String(ex));
+                }
+              }}
+            />
+          </label>
+        )}
+        {layout.venue === "User" && layout.sf_gate?.source !== "user" && (
+          <p className="err">This track was created from the log. Confirm start/finish, then Save.</p>
+        )}
+        {trackLayouts.length > 1 && (
+          <label className="muted" style={{ display: "block", marginTop: 8 }}>
+            Layout
+            <select
+              className="kind-select"
+              style={{ marginLeft: 8 }}
+              value={layout.id}
+              onChange={(e) => switchLayout(Number(e.target.value))}
+            >
+              {trackLayouts.map((l) => (
+                <option key={l.id} value={l.id}>
+                  {l.name}
+                  {(l.timing_mode || "loop") === "stage" ? " (A→B)" : ""}
+                </option>
+              ))}
+            </select>
+          </label>
+        )}
         <div className="toolbar-inline" style={{ margin: "10px 0" }}>
-          <button onClick={propose}>Propose S/F from GPS</button>
+          <button
+            className={timingMode === "loop" ? "primary" : undefined}
+            onClick={() => setTimingMode("loop")}
+          >
+            Loop S/F
+          </button>
+          <button
+            className={timingMode === "stage" ? "primary" : undefined}
+            onClick={() => setTimingMode("stage")}
+          >
+            Point-to-point A→B
+          </button>
+        </div>
+        <div className="toolbar-inline" style={{ margin: "10px 0" }}>
+          <button onClick={propose} disabled={!mapData.length && stage}>
+            {stage ? "Propose A/B from GPS ends" : "Propose S/F from GPS"}
+          </button>
+          {stage && (
+            <>
+              <button className={placingKind === "start" ? "primary" : undefined} onClick={() => startPlacing("start")} disabled={!mapData.length}>
+                {gate ? "Move A" : "Place A"}
+              </button>
+              <button className={placingKind === "finish" ? "primary" : undefined} onClick={() => startPlacing("finish")} disabled={!mapData.length}>
+                {finish ? "Move B" : "Place B"}
+              </button>
+            </>
+          )}
+          {!stage && !gate && (
+            <button className={placingKind === "start" ? "primary" : undefined} onClick={() => startPlacing("start")} disabled={!mapData.length}>
+              Place S/F
+            </button>
+          )}
           <button
             className={saveState === "saved" ? "saved" : "primary"}
             onClick={save}
-            disabled={!gate || saveState === "saving" || saveState === "recalc"}
+            disabled={!canSave || saveState === "saving" || saveState === "recalc"}
           >
             {saveState === "saving"
               ? "Saving…"
@@ -4673,27 +5194,24 @@ function TrackTab({
             : "No splits stored — Save uses equal thirds."}{" "}
           Typical timing uses 3–6 sectors, placed on the straights.
         </p>
-        {placing && <div className="notice">Click the GPS line to place a split. Esc cancels.</div>}
+        {placeHint && <div className="notice">{placeHint}</div>}
         <div className="toolbar-inline" style={{ margin: "8px 0" }}>
           <button
-            className={placing ? "primary" : undefined}
+            className={placingKind === "split" ? "primary" : undefined}
             onClick={() => {
-              if (placing) {
-                placingRef.current = false;
-                setPlacing(false);
+              if (placingKind === "split") {
+                startPlacing("split");
                 return;
               }
               if (sectors.length >= MAX_SPLITS) {
                 setMsg(`Max ${MAX_SPLITS + 1} sectors.`);
                 return;
               }
-              placingRef.current = true;
-              setPlacing(true);
-              setMsg("");
+              startPlacing("split");
             }}
             disabled={!mapData.length}
           >
-            {placing ? "Cancel place" : "Add split"}
+            {placingKind === "split" ? "Cancel place" : "Add split"}
           </button>
           <select
             className="kind-select"
@@ -4712,8 +5230,8 @@ function TrackTab({
               const next = equalSectorGates(mapData, equalN);
               applySectors(next);
               setSelectedSplit(null);
-              placingRef.current = false;
-              setPlacing(false);
+              placingRef.current = null;
+              setPlacingKind(null);
               setMsg(next.length ? `Placed ${next.length} equal split${next.length === 1 ? "" : "s"} (${equalN} sectors). Save to retime.` : "Need GPS on the map to place splits.");
             }}
             disabled={!mapData.length}

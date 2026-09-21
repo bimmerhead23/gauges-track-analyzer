@@ -80,7 +80,9 @@ def lap_slice(df: pd.DataFrame, lap: Lap) -> pd.DataFrame:
         return sl
     sl["lap_dist_m"] = sl["dist_m"] - float(sl["dist_m"].iloc[0])
     sl["lap_t_ms"] = sl["t_ms"] - float(sl["t_ms"].iloc[0])
-    return sl
+    from .ingest import repair_stored_g
+
+    return repair_stored_g(sl)
 
 
 def downsample_xy(x: np.ndarray, y: np.ndarray, max_points: int) -> tuple[list, list]:
@@ -99,6 +101,8 @@ def downsample_xy(x: np.ndarray, y: np.ndarray, max_points: int) -> tuple[list, 
         seg_x = x[a:b]
         if len(seg_y) == 0:
             continue
+        if not np.isfinite(seg_y).any():
+            continue
         jmin = int(np.nanargmin(seg_y))
         jmax = int(np.nanargmax(seg_y))
         order = sorted({0, jmin, jmax, len(seg_y) - 1})
@@ -108,13 +112,45 @@ def downsample_xy(x: np.ndarray, y: np.ndarray, max_points: int) -> tuple[list, 
     return xs, ys
 
 
+def _with_math_helpers(sl: pd.DataFrame) -> pd.DataFrame:
+    """Older logs have no wheel_speed_mph column. Build it in mph for math channels."""
+    if "wheel_speed_mph" in sl.columns or "speed_mph" not in sl.columns:
+        return sl
+    from .ingest import _wheel_as_mph
+
+    out = sl.copy()
+    wheel = out["speed_mph"].to_numpy(dtype=float)
+    if "gps_speed_mph" in out.columns:
+        out["wheel_speed_mph"] = _wheel_as_mph(wheel, out["gps_speed_mph"].to_numpy(dtype=float))
+    else:
+        out["wheel_speed_mph"] = wheel
+    return out
+
+
 def eval_math(expr: str, sl: pd.DataFrame) -> np.ndarray | None:
-    local = {c: sl[c].to_numpy(dtype=float) for c in sl.columns if sl[c].dtype.kind in "fiu"}
+    frame = _with_math_helpers(sl)
+    local = {c: frame[c].to_numpy(dtype=float) for c in frame.columns if frame[c].dtype.kind in "fiu"}
     try:
         out = ne.evaluate(expr, local_dict=local, global_dict={})
         return np.asarray(out, dtype=float)
     except Exception:
         return None
+
+
+def _interp_finite(x: np.ndarray, y: np.ndarray, xq: float) -> float | None:
+    n = min(len(x), len(y))
+    if n < 2:
+        return None
+    xs = np.asarray(x[:n], dtype=float)
+    ys = np.asarray(y[:n], dtype=float)
+    m = np.isfinite(xs) & np.isfinite(ys)
+    if int(m.sum()) < 2:
+        return None
+    xs, ys = xs[m], ys[m]
+    order = np.argsort(xs, kind="mergesort")
+    xs, ys = xs[order], ys[order]
+    v = float(np.interp(float(xq), xs, ys))
+    return v if np.isfinite(v) else None
 
 
 def series_for(
@@ -136,18 +172,27 @@ def interpolate_at_distance(sl: pd.DataFrame, dist_m: float, keys: list[str], ma
     d = sl["lap_dist_m"].to_numpy(dtype=float)
     if len(d) < 2:
         return {}
-    dist_m = float(np.clip(dist_m, d.min(), d.max()))
+    finite_d = d[np.isfinite(d)]
+    if len(finite_d) < 2:
+        return {}
+    dist_m = float(np.clip(dist_m, finite_d.min(), finite_d.max()))
     out = {"dist_m": dist_m}
-    out["t_ms"] = float(np.interp(dist_m, d, sl["lap_t_ms"].to_numpy(dtype=float)))
+    t_at = _interp_finite(d, sl["lap_t_ms"].to_numpy(dtype=float), dist_m)
+    if t_at is not None:
+        out["t_ms"] = t_at
     if "lat" in sl.columns:
-        out["lat"] = float(np.interp(dist_m, d, sl["lat"].to_numpy(dtype=float)))
-        out["lon"] = float(np.interp(dist_m, d, sl["lon"].to_numpy(dtype=float)))
+        lat_v = _interp_finite(d, sl["lat"].to_numpy(dtype=float), dist_m)
+        lon_v = _interp_finite(d, sl["lon"].to_numpy(dtype=float), dist_m)
+        if lat_v is not None and lon_v is not None:
+            out["lat"] = lat_v
+            out["lon"] = lon_v
     for k in keys:
         y = series_for(sl, k, math)
         if y is None:
             continue
-        y = np.nan_to_num(y, nan=0.0)
-        out[k] = float(np.interp(dist_m, d, y))
+        v = _interp_finite(d, y, dist_m)
+        if v is not None:
+            out[k] = v
     return out
 
 
@@ -167,11 +212,14 @@ def range_stats(
         return None
     lo = float(min(dist_a, dist_b))
     hi = float(max(dist_a, dist_b))
-    lo = float(np.clip(lo, d.min(), d.max()))
-    hi = float(np.clip(hi, d.min(), d.max()))
-    t_a = float(np.interp(lo, d, t)) if t is not None else None
-    t_b = float(np.interp(hi, d, t)) if t is not None else None
-    mask = (d >= lo) & (d <= hi)
+    finite_d = d[np.isfinite(d)]
+    if len(finite_d) < 2:
+        return None
+    lo = float(np.clip(lo, finite_d.min(), finite_d.max()))
+    hi = float(np.clip(hi, finite_d.min(), finite_d.max()))
+    t_a = _interp_finite(d, t, lo) if t is not None else None
+    t_b = _interp_finite(d, t, hi) if t is not None else None
+    mask = (d >= lo) & (d <= hi) & np.isfinite(d)
     channels = {}
     for k in keys:
         y = series_for(sl, k, math)
@@ -180,8 +228,8 @@ def range_stats(
         y = np.asarray(y, dtype=float)
         n = min(len(y), len(d))
         yy, dd = y[:n], d[:n]
-        a = float(np.interp(lo, dd, np.nan_to_num(yy, nan=0.0)))
-        b = float(np.interp(hi, dd, np.nan_to_num(yy, nan=0.0)))
+        a = _interp_finite(dd, yy, lo)
+        b = _interp_finite(dd, yy, hi)
         seg = yy[mask[:n] & np.isfinite(yy)]
         channels[k] = {
             "a": a,
@@ -199,6 +247,50 @@ def range_stats(
         "delta_s": ((t_b - t_a) / 1000.0) if t_a is not None and t_b is not None else None,
         "channels": channels,
     }
+
+
+def align_lap_distance(
+    sl: pd.DataFrame,
+    lap: Lap,
+    ref_sl: pd.DataFrame,
+    ref_lap: Lap,
+) -> pd.DataFrame:
+    """Stretch each sector onto the reference lap so the same beacon is the same x.
+
+    Without this, a longer line slides Turn 11 down the overlay. Sector beacons
+    are the physical points we trust. Equal thirds still share the axis, they
+    just are not corners. The reference lap itself is left alone.
+    """
+    if sl is None or sl.empty or ref_sl is None or ref_sl.empty or lap.id == ref_lap.id:
+        return sl
+    if "lap_dist_m" not in sl.columns or "lap_dist_m" not in ref_sl.columns:
+        return sl
+    d = sl["lap_dist_m"].to_numpy(dtype=float)
+    wins = sector_distance_windows(lap, sl)
+    rw = sector_distance_windows(ref_lap, ref_sl)
+    out = d.copy()
+    if wins and rw and len(wins) == len(rw):
+        for w, r in zip(wins, rw):
+            span = float(w["d1"]) - float(w["d0"])
+            rspan = float(r["d1"]) - float(r["d0"])
+            if span <= 1e-3:
+                continue
+            mask = np.isfinite(d) & (d >= w["d0"]) & (d <= w["d1"] + 1e-3)
+            frac = np.clip((d[mask] - w["d0"]) / span, 0.0, 1.0)
+            out[mask] = float(r["d0"]) + frac * rspan
+        if len(wins):
+            out[np.isfinite(d) & (d > wins[-1]["d1"])] = float(rw[-1]["d1"])
+            out[np.isfinite(d) & (d < wins[0]["d0"])] = float(rw[0]["d0"])
+    else:
+        span = float(np.nanmax(d)) if np.isfinite(d).any() else 0.0
+        ref_d = ref_sl["lap_dist_m"].to_numpy(dtype=float)
+        ref_span = float(np.nanmax(ref_d)) if np.isfinite(ref_d).any() else 0.0
+        if span > 1.0 and ref_span > 1.0:
+            out = d * (ref_span / span)
+    sl = sl.copy()
+    filled = np.where(np.isfinite(out), out, 0.0)
+    sl["lap_dist_m"] = np.maximum.accumulate(filled)
+    return sl
 
 
 def time_delta(ref: pd.DataFrame, other: pd.DataFrame, max_points: int = 1500) -> dict:
@@ -256,9 +348,11 @@ def _time_at_dist(sl: pd.DataFrame, dist_m: float) -> float | None:
     if n < 2:
         return None
     d, t = d[:n], t[:n]
-    x = float(np.clip(dist_m, float(d.min()), float(d.max())))
-    v = float(np.interp(x, d, t))
-    return v if np.isfinite(v) else None
+    finite = d[np.isfinite(d)]
+    if len(finite) < 2:
+        return None
+    x = float(np.clip(dist_m, float(finite.min()), float(finite.max())))
+    return _interp_finite(d, t, x)
 
 
 def _scaled_halves(sl: pd.DataFrame, window: dict) -> tuple[float, float]:

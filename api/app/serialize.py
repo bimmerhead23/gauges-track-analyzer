@@ -17,6 +17,7 @@ def lap_out(l: Lap, include_sectors: bool = True) -> dict:
         "time_ms": l.time_ms,
         "distance_m": round(l.distance_m, 1),
         "kind": l.kind,
+        "sectors_source": l.sectors_source or "",
         "is_best": l.is_best,
     }
     if include_sectors:
@@ -37,6 +38,8 @@ def layout_out(lay: Layout | None) -> dict | None:
         "centroid_lon": lay.centroid_lon,
         "match_radius_m": lay.match_radius_m,
         "sf_gate": lay.sf_gate,
+        "finish_gate": lay.finish_gate,
+        "timing_mode": lay.timing_mode or "loop",
         "sectors": lay.sectors or [],
         "pit_polygon": lay.pit_polygon,
         "turns": lay.turns or {},

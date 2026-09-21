@@ -11,14 +11,27 @@ from .turns import turns_payload
 DEFAULT_MATH = [
     {"name": "Combined G", "expression": "sqrt(gps_lat_g**2 + gps_long_g**2)", "unit": "g", "color": "#a371f7"},
     {"name": "Throttle-Brake overlap", "expression": "(tps > 5) * (brake > 5)", "unit": "", "color": "#f778ba"},
-    {"name": "GPS vs wheel (mph)", "expression": "gps_speed_mph - speed_mph", "unit": "mph", "color": "#d29922"},
+    {"name": "GPS vs wheel", "expression": "gps_speed_mph - wheel_speed_mph", "unit": "mph", "color": "#d29922"},
 ]
+
+_OLD_WHEEL_EXPR = "gps_speed_mph - speed_mph"
 
 
 def _find_layout(track: Track, lay: dict) -> Layout | None:
     want_dir = (lay["direction"] or "").upper()
     want_name = lay["name"]
     short = want_name.split()[0]
+    if (lay.get("timing_mode") or "loop") == "stage":
+        staged = [e for e in track.layouts if (e.timing_mode or "loop") == "stage"]
+        if len(staged) == 1:
+            return staged[0]
+        for existing in staged:
+            if existing.name == want_name:
+                return existing
+        for existing in track.layouts:
+            n = (existing.name or "").lower()
+            if "btg" in n or "gantry" in n:
+                return existing
     for existing in track.layouts:
         if (existing.direction or "").upper() != want_dir:
             continue
@@ -64,6 +77,8 @@ def upsert_tracks(db: DB) -> None:
                         centroid_lon=lay["centroid_lon"],
                         match_radius_m=lay.get("match_radius_m", 8000),
                         sf_gate=lay.get("sf_gate"),
+                        finish_gate=lay.get("finish_gate"),
+                        timing_mode=lay.get("timing_mode") or "loop",
                         sectors=lay.get("sectors"),
                         turns=payload,
                     )
@@ -77,6 +92,12 @@ def upsert_tracks(db: DB) -> None:
             found.turns = payload
             if lay.get("sf_gate") and not found.sf_gate:
                 found.sf_gate = lay["sf_gate"]
+            if lay.get("finish_gate") and not found.finish_gate:
+                found.finish_gate = lay["finish_gate"]
+            if lay.get("timing_mode") == "stage":
+                found.timing_mode = "stage"
+            elif not found.timing_mode:
+                found.timing_mode = "loop"
             if lay.get("sectors") and not found.sectors:
                 found.sectors = lay["sectors"]
 
@@ -97,6 +118,8 @@ def apply_layout_sectors(db: DB) -> None:
         slen = float(spec.get("length_m") or 0)
         nearby = []
         for lay in layouts:
+            if lay.track and (lay.track.venue or "") == "User":
+                continue
             d = float(haversine_m(slat, slon, lay.centroid_lat, lay.centroid_lon))
             if d <= 9000:
                 nearby.append((d, lay))
@@ -155,4 +178,10 @@ def seed_if_empty(db: DB) -> None:
     if db.query(MathChannel).count() == 0:
         for m in DEFAULT_MATH:
             db.add(MathChannel(**m))
+    else:
+        stale = db.query(MathChannel).filter(MathChannel.expression == _OLD_WHEEL_EXPR).all()
+        for row in stale:
+            row.expression = "gps_speed_mph - wheel_speed_mph"
+            if row.name == "GPS vs wheel (mph)":
+                row.name = "GPS vs wheel"
     db.commit()

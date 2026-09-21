@@ -95,7 +95,16 @@ def write_backup(db: DB, dest: Path) -> dict:
             {
                 "track": track_name,
                 "name": lay.name,
+                "venue": lay.track.venue if lay.track else "",
+                "direction": lay.direction,
+                "length_m": lay.length_m,
+                "centroid_lat": lay.centroid_lat,
+                "centroid_lon": lay.centroid_lon,
+                "match_radius_m": lay.match_radius_m,
+                "turns": lay.turns,
                 "sf_gate": lay.sf_gate,
+                "finish_gate": lay.finish_gate,
+                "timing_mode": lay.timing_mode or "loop",
                 "sectors": lay.sectors or [],
                 "pit_polygon": lay.pit_polygon,
             }
@@ -219,10 +228,37 @@ def restore_backup(db: DB, src: Path) -> dict:
 
         for spec in layout_dump:
             lay = _find_layout(db, spec.get("track") or "", spec.get("name") or "")
+            if not lay and (spec.get("venue") or "") == "User":
+                track = db.query(Track).filter(Track.name == (spec.get("track") or "")).first()
+                if track is None:
+                    track = Track(
+                        name=str(spec.get("track") or "GPS track")[:120],
+                        venue="User",
+                        notes="Restored from a library backup.",
+                    )
+                    db.add(track)
+                    db.flush()
+                lay = Layout(
+                    track_id=track.id,
+                    name=str(spec.get("name") or "From this log")[:120],
+                    direction=str(spec.get("direction") or "CW")[:8],
+                    length_m=float(spec.get("length_m") or 1000),
+                    centroid_lat=float(spec.get("centroid_lat") or 0),
+                    centroid_lon=float(spec.get("centroid_lon") or 0),
+                    match_radius_m=float(spec.get("match_radius_m") or 2500),
+                    timing_mode=spec.get("timing_mode") if spec.get("timing_mode") in ("loop", "stage") else "loop",
+                    turns=spec.get("turns") if isinstance(spec.get("turns"), dict) else None,
+                )
+                db.add(lay)
+                db.flush()
             if not lay:
                 continue
             if spec.get("sf_gate"):
                 lay.sf_gate = spec["sf_gate"]
+            if spec.get("finish_gate"):
+                lay.finish_gate = spec["finish_gate"]
+            if spec.get("timing_mode") in ("loop", "stage"):
+                lay.timing_mode = spec["timing_mode"]
             if spec.get("sectors"):
                 lay.sectors = spec["sectors"]
             if spec.get("pit_polygon") is not None:

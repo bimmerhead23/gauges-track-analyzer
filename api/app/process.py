@@ -5,7 +5,7 @@ from pathlib import Path
 from sqlalchemy.orm import Session as DB
 
 from .ingest import channel_catalog, gps_bbox, parse_gauge_s, write_session_files
-from .laps import _speed_mps, match_layout, persist_laps
+from .laps import _speed_mps, adopt_unmatched, match_layout, persist_laps
 from .models import Lap, Layout, Session
 
 
@@ -32,6 +32,8 @@ def process_session(db: DB, session: Session, csv_path: Path) -> Session:
             speed = _speed_mps(df)
             dist = df["dist_m"].to_numpy(dtype=float)
             layout = match_layout(db, lat, lon, speed, dist)
+            if layout is None:
+                layout = adopt_unmatched(db, df, session.filename)
             if layout:
                 session.layout_id = layout.id
 
@@ -41,7 +43,13 @@ def process_session(db: DB, session: Session, csv_path: Path) -> Session:
             .filter(Lap.session_id == session.id, Lap.kind == "valid")
             .count()
         )
-        if flying_n and layout and not layout.sf_gate and gate:
+        if (
+            flying_n
+            and layout
+            and not layout.sf_gate
+            and gate
+            and (layout.timing_mode or "loop") != "stage"
+        ):
             layout.sf_gate = gate
 
         session.status = "ready"

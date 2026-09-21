@@ -20,7 +20,7 @@ from .config import (
     XAI_API_KEY,
 )
 from .models import Lap
-from .traces import eclectic_best, mini_sectors, series_for, time_delta
+from .traces import align_lap_distance, eclectic_best, mini_sectors, series_for, time_delta
 from .turns import build_turns, locate_window
 
 KEYS = ["gps_speed_mph", "tps", "brake", "gps_long_g", "gps_lat_g", "rpm"]
@@ -306,12 +306,16 @@ def build_briefing(
         sub_sl = slices.get(subject.id)
         ref_sl = slices.get(ref.id)
         if sub_sl is not None and ref_sl is not None and not sub_sl.empty and not ref_sl.empty:
-            td = time_delta(ref_sl, sub_sl)
+            sub_axis = align_lap_distance(sub_sl, subject, ref_sl, ref)
+            td = time_delta(ref_sl, sub_axis)
             briefing["delta_vs_ref_end_s"] = round(float(td["y"][-1]), 3) if td.get("y") else None
             windows = _loss_windows(td.get("x") or [], td.get("y") or [], width_m=120.0, top_n=5)
+            long_k = "long_g" if "long_g" in sub_sl.columns else "gps_long_g"
+            lat_k = "lat_g" if "lat_g" in sub_sl.columns else "gps_lat_g"
+            briefing["g_source"] = "ecu" if long_k == "long_g" else "gps"
             for w in windows:
-                ch_keys = ("gps_speed_mph", "tps", "brake", "gps_lat_g", "gps_long_g")
-                sub_ch = {k: _col_stats(sub_sl, k, math, w["d0_m"], w["d1_m"]) for k in ch_keys}
+                ch_keys = ("gps_speed_mph", "tps", "brake", lat_k, long_k)
+                sub_ch = {k: _col_stats(sub_axis, k, math, w["d0_m"], w["d1_m"]) for k in ch_keys}
                 ref_ch = {k: _col_stats(ref_sl, k, math, w["d0_m"], w["d1_m"]) for k in ch_keys}
                 w["subject"] = {k: v for k, v in sub_ch.items() if v}
                 w["reference"] = {k: v for k, v in ref_ch.items() if v}
@@ -397,7 +401,7 @@ def build_briefing(
                 sl = slices.get(l.id)
                 rf = slices.get(fastest.id)
                 if sl is not None and rf is not None and not sl.empty and not rf.empty:
-                    td = time_delta(rf, sl)
+                    td = time_delta(rf, align_lap_distance(sl, l, rf, fastest))
                     row["delta_vs_fastest_s"] = round(float(td["y"][-1]), 3) if td.get("y") else None
                     losses = _loss_windows(td.get("x") or [], td.get("y") or [], top_n=2)
                     for w in losses:
@@ -412,13 +416,15 @@ def build_briefing(
     return briefing
 
 
-PROMPT_VERSION = "7"
+PROMPT_VERSION = "8"
 
 SYSTEM = """Expert driving coach. Gauge.S ~14Hz GPS+ECU. Use ONLY briefing numbers.
 
 Locate by TURN NUMBER from briefing.turns and loss_windows[].where (T12 entry, T1 apex, T11–T12 straight). Nicknames only if listed in briefing.turns (Big Red, Esses, Bobby Pin, Andretti, Carousel). NEVER invent names. NEVER use "sector 3 exit" as the primary location; S1/S2/S3 may follow in parentheses if useful.
 
-vs_ref: brake_point_delta_m<0 = braked earlier; >0 = later. min_speed_delta_mph<0 = slower at slowest point. avg_tps_delta<0 = less throttle. +gps_long_g = brake; +gps_lat_g = left.
+vs_ref: brake_point_delta_m<0 = braked earlier; >0 = later. min_speed_delta_mph<0 = slower at slowest point. avg_tps_delta<0 = less throttle. +long G = brake; +lat G = left. If g_source is ecu, long_g/lat_g are the accelerometer (already oriented). Otherwise gps_long_g/gps_lat_g are approximate.
+
+log_sheet ambient_f and track_temp_f are always Fahrenheit. pressure_fl/fr/rl/rr are always psi. Say them in those units. Do not treat a metric user's typed number as Celsius — the app already stored Fahrenheit.
 
 Write a real debrief, not slogans:
 - headline + summary (3–5 sentences: gap, theme, named turns, AND any filled log_sheet: weather, ambient_f, track_temp_f, tyres, pressures, fuel, wing, setup, notes). If log_sheet is empty, do not invent conditions.

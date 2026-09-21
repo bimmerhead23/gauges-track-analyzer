@@ -14,6 +14,7 @@ from ..models import CoachReport, Lap, Layout, MathChannel, Session
 from ..channels import DISPLAY
 from ..serialize import lap_out, math_out, sector_out
 from ..traces import (
+    align_lap_distance,
     apply_gates,
     downsample_xy,
     eclectic_best,
@@ -28,6 +29,7 @@ from ..traces import (
     stats,
     time_delta,
 )
+from ..turns import build_turns
 
 router = APIRouter(tags=["analysis"])
 
@@ -69,6 +71,22 @@ def _df_cache(laps: list[Lap]) -> dict[int, object]:
     return cache
 
 
+def _aligned(laps: list[Lap], cache: dict, ref_lap_id: int | None):
+    """Sector-align every lap onto the reference so overlay x is shared."""
+    ref = next((l for l in laps if ref_lap_id and l.id == ref_lap_id), None)
+    if ref is None and laps:
+        flying = [l for l in laps if l.kind == "valid"]
+        ref = min(flying or laps, key=lambda l: l.time_ms)
+    ref_sl = lap_slice(cache[ref.session_id], ref) if ref is not None else None
+    out = {}
+    for lap in laps:
+        sl = lap_slice(cache[lap.session_id], lap)
+        if ref is not None and ref_sl is not None and lap.id != ref.id:
+            sl = align_lap_distance(sl, lap, ref_sl, ref)
+        out[lap.id] = sl
+    return out, ref, ref_sl
+
+
 @router.get("/laps")
 def get_laps(ids: str = Query(""), session_id: int | None = None, db: DB = Depends(get_db)):
     if ids:
@@ -96,6 +114,12 @@ def patch_lap(lap_id: int, body: LapPatch, db: DB = Depends(get_db)):
     if not lap:
         raise HTTPException(404, "Lap not found")
     if body.kind:
+        if body.kind not in {"valid", "out", "in", "pit", "invalid"}:
+            raise HTTPException(400, "kind must be valid, out, in, pit, or invalid")
+        from ..config import is_demo
+
+        if is_demo():
+            raise HTTPException(403, "Public demo — lap labels are read-only")
         lap.kind = body.kind
         # recompute best
         sibs = db.query(Lap).filter(Lap.session_id == lap.session_id).all()
@@ -113,6 +137,7 @@ def traces(
     lap_ids: str,
     channels: str = "gps_speed_mph,rpm,tps,brake,gps_long_g,gps_lat_g",
     max_points: int = 2500,
+    ref_lap_id: int | None = None,
     db: DB = Depends(get_db),
 ):
     ids = [int(x) for x in lap_ids.split(",") if x]
@@ -120,9 +145,10 @@ def traces(
     keys = [c.strip() for c in channels.split(",") if c.strip()]
     math = db.query(MathChannel).filter(MathChannel.enabled.is_(True)).all()
     cache = _df_cache(laps)
+    slices, ref, _ref_sl = _aligned(laps, cache, ref_lap_id)
     out = []
     for lap in laps:
-        sl = lap_slice(cache[lap.session_id], lap)
+        sl = slices[lap.id]
         x = sl["lap_dist_m"].to_numpy(dtype=float) if not sl.empty else []
         series = {}
         for k in keys:
@@ -149,6 +175,7 @@ def cursor(
     lap_ids: str,
     dist_m: float,
     channels: str = "gps_speed_mph,rpm,tps,brake,gps_long_g,gps_lat_g,speed_mph,oil_temp,coolant,afr",
+    ref_lap_id: int | None = None,
     db: DB = Depends(get_db),
 ):
     ids = [int(x) for x in lap_ids.split(",") if x]
@@ -156,9 +183,10 @@ def cursor(
     keys = [c.strip() for c in channels.split(",") if c.strip()]
     math = db.query(MathChannel).filter(MathChannel.enabled.is_(True)).all()
     cache = _df_cache(laps)
+    slices, _ref, _ref_sl = _aligned(laps, cache, ref_lap_id)
     values = []
     for lap in laps:
-        sl = lap_slice(cache[lap.session_id], lap)
+        sl = slices[lap.id]
         values.append({"lap_id": lap.id, **interpolate_at_distance(sl, dist_m, keys, math)})
     return {"dist_m": dist_m, "values": values}
 
@@ -169,6 +197,7 @@ def ab_range(
     dist_a: float,
     dist_b: float,
     channels: str = "gps_speed_mph,tps,brake",
+    ref_lap_id: int | None = None,
     db: DB = Depends(get_db),
 ):
     ids = [int(x) for x in lap_ids.split(",") if x]
@@ -176,9 +205,10 @@ def ab_range(
     keys = [c.strip() for c in channels.split(",") if c.strip()]
     math = db.query(MathChannel).filter(MathChannel.enabled.is_(True)).all()
     cache = _df_cache(laps)
+    slices, _ref, _ref_sl = _aligned(laps, cache, ref_lap_id)
     rows = []
     for lap in laps:
-        sl = lap_slice(cache[lap.session_id], lap)
+        sl = slices[lap.id]
         stats_row = range_stats(sl, dist_a, dist_b, keys, math)
         if stats_row is None:
             continue
@@ -198,13 +228,13 @@ def delta(ref_lap_id: int, lap_ids: str, db: DB = Depends(get_db)):
         ids = [ref_lap_id] + ids
     laps = _laps(db, ids)
     cache = _df_cache(laps)
-    by = {l.id: l for l in laps}
-    ref = lap_slice(cache[by[ref_lap_id].session_id], by[ref_lap_id])
+    slices, ref_lap, ref_sl = _aligned(laps, cache, ref_lap_id)
+    if ref_sl is None:
+        ref_sl = slices[ref_lap_id]
     series = []
     for lap in laps:
-        sl = lap_slice(cache[lap.session_id], lap)
-        series.append({"lap_id": lap.id, **time_delta(ref, sl)})
-    return {"ref_lap_id": ref_lap_id, "series": series}
+        series.append({"lap_id": lap.id, **time_delta(ref_sl, slices[lap.id])})
+    return {"ref_lap_id": ref_lap.id if ref_lap is not None else ref_lap_id, "aligned": True, "series": series}
 
 
 def _json_floats(arr: np.ndarray) -> list:
@@ -216,6 +246,7 @@ def map_traces(
     lap_ids: str,
     max_points: int = 2000,
     channels: str = "gps_speed_mph,tps,brake,afr",
+    ref_lap_id: int | None = None,
     db: DB = Depends(get_db),
 ):
     ids = [int(x) for x in lap_ids.split(",") if x]
@@ -223,31 +254,49 @@ def map_traces(
     cache = _df_cache(laps)
     keys = [c.strip() for c in channels.split(",") if c.strip()]
     math = db.query(MathChannel).filter(MathChannel.enabled.is_(True)).all() if keys else []
+    slices, ref, ref_sl = _aligned(laps, cache, ref_lap_id)
     out = []
     for lap in laps:
-        sl = lap_slice(cache[lap.session_id], lap)
+        sl = slices[lap.id]
         if sl.empty or "lat" not in sl.columns:
             out.append({"lap_id": lap.id, "lat": [], "lon": [], "dist": [], "values": {}})
             continue
         lat = sl["lat"].to_numpy(dtype=float)
         lon = sl["lon"].to_numpy(dtype=float)
         dist = sl["lap_dist_m"].to_numpy(dtype=float)
+        n = min(len(lat), len(lon), len(dist))
+        lat, lon, dist = lat[:n], lon[:n], dist[:n]
+        # A GPS gap is NaN. One NaN fails the whole response (JSON has no NaN),
+        # which blanks the map for every lap in the selection.
+        good = np.isfinite(lat) & np.isfinite(lon) & np.isfinite(dist)
+        if int(good.sum()) < 2:
+            out.append({"lap_id": lap.id, "lat": [], "lon": [], "dist": [], "values": {}})
+            continue
+        lat, lon, dist = lat[good], lon[good], dist[good]
         step = max(1, len(lat) // max_points)
         values: dict[str, list] = {}
         for k in keys:
             y = series_for(sl, k, math)
-            if y is None or len(y) != len(lat):
+            if y is None or len(y) < n:
                 values[k] = []
                 continue
+            y = np.asarray(y[:n], dtype=float)[good]
             values[k] = _json_floats(np.asarray(y[::step], dtype=float))
         out.append({
             "lap_id": lap.id,
-            "lat": lat[::step].tolist(),
-            "lon": lon[::step].tolist(),
-            "dist": dist[::step].tolist(),
+            "lat": _json_floats(lat[::step]),
+            "lon": _json_floats(lon[::step]),
+            "dist": _json_floats(dist[::step]),
             "values": values,
         })
-    return out
+    turns = []
+    if ref is not None and ref_sl is not None and not getattr(ref_sl, "empty", True):
+        length = float(ref.distance_m or 0)
+        if "lap_dist_m" in ref_sl.columns and len(ref_sl):
+            length = max(length, float(ref_sl["lap_dist_m"].iloc[-1]))
+        layout = ref.session.layout if ref.session else None
+        turns = build_turns(ref_sl, layout, length or 1.0)
+    return {"laps": out, "turns": turns, "ref_lap_id": ref.id if ref else None}
 
 
 def _sector_channel_stats(sl, lap, keys, math) -> dict[int, dict]:
@@ -360,6 +409,7 @@ def scatter(
     gates: str | None = None,
     dist_min: float | None = None,
     dist_max: float | None = None,
+    ref_lap_id: int | None = None,
     db: DB = Depends(get_db),
 ):
     ids = [int(k) for k in lap_ids.split(",") if k]
@@ -367,9 +417,10 @@ def scatter(
     math = db.query(MathChannel).filter(MathChannel.enabled.is_(True)).all()
     parsed = _gates(gates)
     cache = _df_cache(laps)
+    slices, _ref, _ref_sl = _aligned(laps, cache, ref_lap_id)
     out = []
     for lap in laps:
-        sl = lap_slice(cache[lap.session_id], lap)
+        sl = slices[lap.id]
         xv = series_for(sl, x, math)
         yv = series_for(sl, y, math)
         if xv is None or yv is None or sl.empty:
@@ -402,6 +453,7 @@ def histogram(
     dist_max: float | None = None,
     threshold: float | None = None,
     gates: str | None = None,
+    ref_lap_id: int | None = None,
     db: DB = Depends(get_db),
 ):
     """Time-weighted histogram with shared bins across laps.
@@ -415,13 +467,14 @@ def histogram(
     math = db.query(MathChannel).filter(MathChannel.enabled.is_(True)).all()
     parsed = _gates(gates)
     cache = _df_cache(laps)
+    slices, _ref, _ref_sl = _aligned(laps, cache, ref_lap_id)
     import numpy as np
 
     bins = int(min(60, max(8, bins)))
     prepared: list[tuple[int, np.ndarray, np.ndarray]] = []
     all_y: list[np.ndarray] = []
     for lap in laps:
-        sl = lap_slice(cache[lap.session_id], lap)
+        sl = slices[lap.id]
         y = series_for(sl, channel, math)
         if y is None or sl.empty:
             continue
@@ -504,6 +557,7 @@ def afr_map(
     gates: str | None = None,
     dist_min: float | None = None,
     dist_max: float | None = None,
+    ref_lap_id: int | None = None,
     db: DB = Depends(get_db),
 ):
     """Mean AFR in RPM × throttle bins. Empty cells were never visited."""
@@ -512,7 +566,8 @@ def afr_map(
     math = db.query(MathChannel).filter(MathChannel.enabled.is_(True)).all()
     parsed = _gates(gates)
     cache = _df_cache(laps)
-    items = [(lap, lap_slice(cache[lap.session_id], lap)) for lap in laps]
+    slices, _ref, _ref_sl = _aligned(laps, cache, ref_lap_id)
+    items = [(lap, slices[lap.id]) for lap in laps]
     out = operating_map(
         items,
         math,
@@ -595,6 +650,115 @@ def export_laps_csv(lap_ids: str, db: DB = Depends(get_db)):
         media_type="text/csv; charset=utf-8",
         headers={"Content-Disposition": f'attachment; filename="{fname}"'},
     )
+
+
+def _moving_mask(sl: pd.DataFrame) -> np.ndarray:
+    n = len(sl)
+    if "gps_speed" in sl.columns:
+        speed = sl["gps_speed"].to_numpy(dtype=float)
+        return np.isfinite(speed) & (speed > 50)
+    if "gps_speed_mph" in sl.columns:
+        speed = sl["gps_speed_mph"].to_numpy(dtype=float) * 1.609344
+        return np.isfinite(speed) & (speed > 50)
+    return np.ones(n, dtype=bool)
+
+
+def _finite_vals(sl: pd.DataFrame, key: str, mask: np.ndarray | None = None) -> np.ndarray | None:
+    if key not in sl.columns:
+        return None
+    y = sl[key].to_numpy(dtype=float)
+    m = np.isfinite(y)
+    if mask is not None and len(mask) == len(y):
+        m = m & mask
+    if int(m.sum()) < 8:
+        return None
+    return y[m]
+
+
+def _mechanical_items(sl: pd.DataFrame) -> list[dict]:
+    """Lap health from the ECU channels Gauge.S already logged. Empty if absent."""
+    if sl is None or sl.empty:
+        return []
+    items: list[dict] = []
+    moving = _moving_mask(sl)
+    oil = _finite_vals(sl, "oil_psi", moving)
+    if oil is not None:
+        med = float(np.median(oil))
+        mn = float(np.min(oil))
+        if med > 80:
+            unit, low = "kPa", mn < 150
+        elif med > 12:
+            unit, low = "psi", mn < 20
+        else:
+            unit, low = "bar", mn < 1.5
+        items.append({
+            "key": "oil_psi",
+            "label": "Oil P min",
+            "value": round(mn, 2),
+            "unit": unit,
+            "flag": "low" if low else "",
+        })
+    for key, label, hot_c, hot_f in (
+        ("coolant", "Coolant max", 115, 240),
+        ("oil_temp", "Oil T max", 125, 260),
+    ):
+        vals = _finite_vals(sl, key)
+        if vals is None:
+            continue
+        med = float(np.median(vals))
+        mx = float(np.max(vals))
+        if med > 140:
+            unit, hot = "°F", mx > hot_f
+        else:
+            unit, hot = "°C", mx > hot_c
+        items.append({
+            "key": key,
+            "label": label,
+            "value": round(mx, 1),
+            "unit": unit,
+            "flag": "high" if hot else "",
+        })
+    if "afr" in sl.columns and "tps" in sl.columns:
+        y = sl["afr"].to_numpy(dtype=float)
+        tps = sl["tps"].to_numpy(dtype=float)
+        all_afr = y[np.isfinite(y)]
+        wot = np.isfinite(y) & np.isfinite(tps) & (tps >= 90)
+        if all_afr.size >= 8 and int(wot.sum()) >= 8:
+            sample = y[wot]
+            med = float(np.median(all_afr))
+            mx = float(np.max(sample))
+            mn = float(np.min(sample))
+            if med < 2.5:
+                unit = "λ"
+                flag = "lean" if mx > 1.08 else "rich" if mn < 0.78 else ""
+            else:
+                unit = "AFR"
+                flag = "lean" if mx > 15.2 else "rich" if mn < 10.8 else ""
+            shown = mx if flag == "lean" else mn if flag == "rich" else mx
+            items.append({
+                "key": "afr",
+                "label": "AFR at WOT",
+                "value": round(float(shown), 2),
+                "unit": unit,
+                "flag": flag,
+            })
+    return items
+
+
+@router.get("/mechanical")
+def mechanical(lap_ids: str, db: DB = Depends(get_db)):
+    ids = [int(x) for x in lap_ids.split(",") if x]
+    laps = _laps(db, ids)
+    cache = _df_cache(laps)
+    rows = []
+    for lap in laps:
+        sl = lap_slice(cache[lap.session_id], lap)
+        rows.append({
+            "lap_id": lap.id,
+            "number": lap.number,
+            "items": _mechanical_items(sl),
+        })
+    return {"laps": rows}
 
 
 @router.get("/math-channels")

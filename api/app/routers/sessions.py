@@ -12,6 +12,7 @@ from ..config import DATA_DIR, is_demo
 from ..db import get_db
 from ..filesafe import MAX_DEMO_SESSIONS, safe_filename, save_upload
 from ..models import Lap, Layout, Sector, Session, Vehicle
+from ..ingest import enrich_channel_units
 from ..process import process_session, reprocess
 from ..reset import reset_database
 from ..serialize import session_out
@@ -119,6 +120,9 @@ def clean_analysis_settings(raw: dict | None) -> dict:
     mc = raw.get("mapColor")
     if isinstance(mc, str) and mc[:40]:
         out["mapColor"] = mc[:40]
+    units = raw.get("units")
+    if units in ("metric", "imperial"):
+        out["units"] = units
     gp = raw.get("gatePreset")
     if isinstance(gp, str) and gp[:24]:
         out["gatePreset"] = gp[:24]
@@ -184,6 +188,8 @@ def get_session(session_id: int, db: DB = Depends(get_db)):
     )
     if not s:
         raise HTTPException(404, "Session not found")
+    if enrich_channel_units(s):
+        db.commit()
     return session_out(s, include_laps=True)
 
 
@@ -231,13 +237,10 @@ async def upload(file: UploadFile = File(...), db: DB = Depends(get_db)):
         .filter(Session.id == sid)
         .first()
     )
-    flying = bool(s and any(l.kind == "valid" for l in (s.laps or [])))
     known = bool(s and s.layout_id)
-    if not s or not known or not flying:
+    if not s or not known:
         _purge_session(db, sid)
-        if not known:
-            raise HTTPException(422, "Unknown track")
-        raise HTTPException(422, "No flying laps")
+        raise HTTPException(422, "Not enough GPS to place this log on a track")
     return session_out(s, include_laps=True)
 
 
