@@ -23,7 +23,7 @@ export default function SetupCompare({ sessions }: { sessions: Session[] }) {
   };
   return (
     <div className="setup-compare">
-      <table className="card">
+      <table>
         <thead>
           <tr>
             <th>Session</th>

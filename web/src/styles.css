@@ -185,6 +185,26 @@ tr.selected { background: var(--selected-row); }
 }
 .drop.hot { border-color: var(--blue); color: var(--blue); }
 .err { color: var(--red); white-space: pre-wrap; }
+.analysis-shell {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+.analysis-shell > .topbar,
+.analysis-shell > .gatebar,
+.analysis-shell > .overlay-chrome {
+  flex: 0 0 auto;
+}
+.overlay-chrome {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 34vh;
+  overflow: auto;
+  padding: 6px 8px 0;
+}
+.overlay-chrome:empty { display: none; }
 .workspace {
   display: grid;
   grid-template-columns: 280px minmax(220px, 1fr) var(--map-w, 280px);
@@ -192,7 +212,8 @@ tr.selected { background: var(--selected-row); }
   grid-template-areas:
     "laps traces side"
     "laps story story";
-  height: calc(100% - 0px);
+  flex: 1 1 auto;
+  height: auto;
   min-height: 0;
   gap: 6px;
   padding: 6px;
@@ -774,11 +795,12 @@ html.light .ab-mark-b { color: #8250df; }
 .math-form { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; }
 .math-form input { width: 100%; }
 .math-row { display: flex; justify-content: space-between; gap: 8px; align-items: center; font-size: 12px; }
-.mech-strip { display: flex; flex-direction: column; gap: 4px; padding: 6px 10px 0; }
-.mech-lap { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
-.pill.mech-flag { border-color: #d29922; color: #d29922; }
-.setup-compare { padding: 8px 10px 0; overflow-x: auto; }
-.setup-compare table { width: 100%; font-size: 12px; }
+.mech-strip { overflow-x: auto; }
+.mech-table { width: 100%; font-size: 12px; background: var(--bg2); border: 1px solid var(--line); border-radius: 8px; }
+.mech-table th, .mech-table td { padding: 4px 8px; white-space: nowrap; }
+.mech-table td.mech-flag { color: #d29922; }
+.setup-compare { overflow-x: auto; }
+.setup-compare table { width: 100%; font-size: 12px; background: var(--bg2); border: 1px solid var(--line); border-radius: 8px; }
 .setup-compare th, .setup-compare td { text-align: left; padding: 4px 8px; white-space: nowrap; }
 .turn-rail { display: flex; flex-wrap: wrap; gap: 4px; margin: 6px 0; }
 .turn-mark { background: transparent; border: none; }
@@ -794,6 +816,18 @@ html.light .ab-mark-b { color: #8250df; }
   white-space: nowrap;
 }
 .kind-select.lap-kind { margin-left: 6px; font-size: 11px; }
+.stint-page { display: flex; flex-direction: column; gap: 16px; }
+.stint-outing { padding: 12px 14px 16px; }
+.stint-head { display: flex; flex-wrap: wrap; gap: 8px 14px; align-items: baseline; }
+.stint-stats { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.stint-canvas { width: 100%; display: block; background: var(--plot-bg); border-radius: 6px; }
+.stint-legend { display: flex; flex-wrap: wrap; gap: 10px; font-size: 12px; color: var(--muted); margin: 8px 0 4px; }
+.stint-legend i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 4px; }
+.stint-table { width: 100%; border-collapse: collapse; font-size: 12px; font-variant-numeric: tabular-nums; margin-top: 10px; }
+.stint-table th, .stint-table td { text-align: right; padding: 4px 8px; border-bottom: 1px solid var(--line); }
+.stint-table th:first-child, .stint-table td:first-child,
+.stint-table th:nth-child(2), .stint-table td:nth-child(2) { text-align: left; }
+.stint-row-dim { color: var(--muted); }
 
 .u-cursor-pt[data-val]::after {
   content: attr(data-val);

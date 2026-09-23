@@ -25,19 +25,41 @@ export default function MechanicalStrip({ lapIds }: { lapIds: number[] }) {
 
   const visible = rows.filter((r) => r.items.length);
   if (!visible.length) return null;
+  const columns: { key: string; label: string }[] = [];
+  for (const row of visible) {
+    for (const item of row.items) {
+      if (!columns.some((c) => c.key === item.key)) columns.push({ key: item.key, label: item.label });
+    }
+  }
   return (
     <div className="mech-strip">
-      {visible.map((r) => (
-        <div key={r.lap_id} className="mech-lap">
-          <span className="muted">L{r.number}</span>
-          {r.items.map((item) => (
-            <span key={item.key} className={`pill${item.flag ? " mech-flag" : ""}`} title={item.flag || "in range"}>
-              {item.label} {item.value} {item.unit}
-              {item.flag ? ` · ${item.flag}` : ""}
-            </span>
+      <table className="mech-table">
+        <thead>
+          <tr>
+            <th>Lap</th>
+            {columns.map((c) => (
+              <th key={c.key}>{c.label}</th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {visible.map((r) => (
+            <tr key={r.lap_id}>
+              <td>L{r.number}</td>
+              {columns.map((c) => {
+                const item = r.items.find((i) => i.key === c.key);
+                if (!item) return <td key={c.key}>—</td>;
+                return (
+                  <td key={c.key} className={item.flag ? "mech-flag" : ""} title={item.flag || "in range"}>
+                    {item.value} {item.unit}
+                    {item.flag ? ` · ${item.flag}` : ""}
+                  </td>
+                );
+              })}
+            </tr>
           ))}
-        </div>
-      ))}
+        </tbody>
+      </table>
     </div>
   );
 }

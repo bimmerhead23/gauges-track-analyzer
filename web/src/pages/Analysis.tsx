@@ -10,6 +10,7 @@ import LogSheetForm, { sheetFilled } from "../LogSheet";
 import MathChannels from "../components/MathChannels";
 import MechanicalStrip from "../components/MechanicalStrip";
 import SetupCompare from "../components/SetupCompare";
+import StintTab from "../components/StintTab";
 import TurnRail from "../components/TurnRail";
 import { cssVar, useTheme } from "../theme";
 import { LAP_COLORS, type Channel, type Gate, type Lap, type Layout, type MathChannel, type Session } from "../types";
@@ -43,11 +44,12 @@ function plotTheme() {
   };
 }
 
-type Tab = "traces" | "splits" | "histogram" | "afr" | "report" | "track" | "coach";
+type Tab = "traces" | "splits" | "stint" | "histogram" | "afr" | "report" | "track" | "coach";
 
 const TAB_LABEL: Record<Tab, string> = {
   traces: "Overlay",
   splits: "Splits",
+  stint: "Stint",
   histogram: "Histogram",
   afr: "AFR",
   report: "Report",
@@ -658,7 +660,7 @@ export default function Analysis() {
 
   return (
     <UnitPrefContext.Provider value={unitPref}>
-    <div style={{ display: "flex", flexDirection: "column", height: "100%", minHeight: 0 }}>
+    <div className="analysis-shell">
       {headerSlot &&
         createPortal(
           <>
@@ -707,7 +709,7 @@ export default function Analysis() {
           ))}
         </div>
         <nav className="tabs">
-          {(["traces", "splits", "histogram", "afr", "report", "track", "coach"] as Tab[]).map((t) => (
+          {(["traces", "splits", "stint", "histogram", "afr", "report", "track", "coach"] as Tab[]).map((t) => (
             <button key={t} className={tab === t ? "active" : ""} onClick={() => setTab(t)}>
               {TAB_LABEL[t]}
             </button>
@@ -715,8 +717,12 @@ export default function Analysis() {
         </nav>
       </div>
       {(err || exportErr) && <div className="err" style={{ padding: 8 }}>{err || exportErr}</div>}
-      {tab === "traces" && <SetupCompare sessions={sessions} />}
-      {tab === "traces" && <MechanicalStrip lapIds={selected} />}
+      {tab === "traces" && (sessions.length > 1 || selected.length > 0) && (
+        <div className="overlay-chrome">
+          <SetupCompare sessions={sessions} />
+          <MechanicalStrip lapIds={selected} />
+        </div>
+      )}
       {(tab === "traces" || tab === "histogram" || tab === "afr" || tab === "report") && (
         <GateBar
           preset={gatePreset}
@@ -949,6 +955,7 @@ export default function Analysis() {
         </div>
       )}
       {tab === "splits" && <SplitsTab selected={selected} laps={laps} colorFor={colorFor} channels={channels} />}
+      {tab === "stint" && <StintTab sessions={sessions} />}
       {tab === "histogram" && (
         <HistTab
           selected={selected}

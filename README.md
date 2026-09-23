@@ -10,7 +10,7 @@ You do **not** need Race Studio, MoTeC, or a Gauge.S device plugged in. You need
 
 Run it yourself: [http://localhost:8090](http://localhost:8090) after the Docker command below.
 
-![Distance-synced overlay, satellite map, G-G scatter, and time gained/lost](docs/screenshots/overlay.jpg)
+![Overlay with setup comparison, lap health, satellite map, G-G scatter, and time gained/lost](docs/screenshots/overlay.jpg)
 
 ---
 
@@ -131,6 +131,18 @@ Official sectors in lap-distance order. **TIME = S1 + S2 + S3** (however many se
 **Sector channels.** Min / max / avg of any channel (speed, throttle, brake, …) per sector vs the reference lap.
 
 **Gain/loss bars.** Per sector vs baseline.
+
+---
+
+## Stint
+
+Every lap in the outing, in the order it was driven. The line is **flying laps only**, so a slow out-lap does not flatten the picture. A rising line is the car giving up time. The number on the pill is seconds per lap.
+
+![Stint: flying lap time and sector time given up, in lap order](docs/screenshots/stint.jpg)
+
+The lower chart is each sector minus its own best flying sector. The sector climbing fastest is the one going away. Out, in, pit, and invalid laps stay in the table under the chart.
+
+Fuel, track temp, and tyres from the log sheet are shown as context. They are not subtracted from the lap time.
 
 ---
 
