@@ -14,7 +14,10 @@ __pycache__
 web/node_modules
 web/dist
 api/.venv
-desktop/
+desktop/node_modules
+desktop/src-tauri/target
+desktop/src-tauri/gen
+desktop/src-tauri/resources
 .idea
 .vscode
 *.swp

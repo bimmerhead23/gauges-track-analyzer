@@ -1,0 +1,49 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Gauge.S Track Analyzer",
+  "version": "1.2.0",
+  "identifier": "com.gauges.track-analyzer",
+  "build": {
+    "frontendDist": "../../web/dist",
+    "devUrl": "http://localhost:5173",
+    "beforeDevCommand": {
+      "cwd": "../../web",
+      "script": "npm run dev"
+    },
+    "beforeBuildCommand": {
+      "cwd": "../..",
+      "script": "npm --prefix web run build && rm -rf desktop/src-tauri/resources/ui && mkdir -p desktop/src-tauri/resources/ui && cp -R web/dist/. desktop/src-tauri/resources/ui/"
+    }
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "Gauge.S Track Analyzer",
+        "width": 1440,
+        "height": 900,
+        "resizable": true,
+        "visible": false
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["dmg", "app"],
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "resources": ["resources/ui/**/*"],
+    "macOS": {
+      "minimumSystemVersion": "12.0",
+      "signingIdentity": "-"
+    }
+  }
+}

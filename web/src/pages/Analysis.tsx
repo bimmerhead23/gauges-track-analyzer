@@ -1,6 +1,7 @@
 import { Fragment, useEffect, useMemo, useRef, useState, type DragEvent, type PointerEvent as ReactPointerEvent } from "react";
 import { createPortal } from "react-dom";
 import { useSearchParams } from "react-router-dom";
+import { rememberAnalysis, savedAnalysisSearch } from "../analysisQuery";
 import L from "leaflet";
 import uPlot from "uplot";
 import { api } from "../api";
@@ -224,7 +225,7 @@ function channelDataRange(traces: any[], key: string): { min: number; max: numbe
 }
 
 export default function Analysis() {
-  const [params] = useSearchParams();
+  const [params, setSearchParams] = useSearchParams();
   const sessionIds = (params.get("sessions") || "")
     .split(",")
     .map(Number)
@@ -290,6 +291,13 @@ export default function Analysis() {
   }, [sessions, math]);
 
   useEffect(() => {
+    if (!sessionIds.length && !lapIdsParam.length) {
+      const saved = savedAnalysisSearch();
+      if (saved) {
+        setSearchParams(new URLSearchParams(saved.slice(1)), { replace: true });
+        return;
+      }
+    }
     let cancel = false;
     (async () => {
       try {
@@ -345,7 +353,17 @@ export default function Analysis() {
       cancel = true;
       setHydrated(false);
     };
-  }, [params]);
+  }, [params, setSearchParams]);
+
+  useEffect(() => {
+    if (!hydrated || !sessions.length || !selected.length) return;
+    const q = rememberAnalysis(
+      sessions.map((s) => s.id),
+      selected
+    );
+    if (!q || window.location.pathname !== "/analyze" || window.location.search === q) return;
+    window.history.replaceState(window.history.state, "", `/analyze${q}`);
+  }, [hydrated, sessions, selected]);
 
   useEffect(() => {
     if (!hydrated || !sessions.length) return;

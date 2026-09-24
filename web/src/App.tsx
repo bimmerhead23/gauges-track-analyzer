@@ -1,6 +1,7 @@
 import { Link, Navigate, Route, Routes, useLocation } from "react-router-dom";
 import Library from "./pages/Library";
 import Analysis from "./pages/Analysis";
+import { savedAnalysisSearch } from "./analysisQuery";
 import { toggleTheme, useTheme } from "./theme";
 
 function SunIcon() {
@@ -45,7 +46,11 @@ export default function App() {
             </Link>
             <Link
               className={loc.pathname.startsWith("/analyze") ? "active" : ""}
-              to={loc.pathname.startsWith("/analyze") ? `${loc.pathname}${loc.search}` : "/analyze"}
+              to={
+                loc.pathname.startsWith("/analyze")
+                  ? `${loc.pathname}${loc.search}`
+                  : `/analyze${savedAnalysisSearch()}`
+              }
               onClick={(e) => {
                 if (loc.pathname.startsWith("/analyze") && !e.metaKey && !e.ctrlKey && !e.shiftKey && !e.altKey) {
                   e.preventDefault();

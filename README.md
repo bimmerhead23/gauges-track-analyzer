@@ -8,7 +8,7 @@ You do **not** need Race Studio, MoTeC, or a Gauge.S device plugged in. You need
 
 **[Live demo](https://gauges-track-analyzer-demo.cnbhome.com)** — click around COTA / Cresson logs. Uploads are wiped overnight. Reset, Restore, Delete, track edits, and lap labels are off.
 
-Run it yourself: [http://localhost:8090](http://localhost:8090) after the Docker command below.
+Run it yourself with Docker at [http://localhost:8090](http://localhost:8090), or open the Mac app below.
 
 ![Overlay with setup comparison, lap health, satellite map, G-G scatter, and time gained/lost](docs/screenshots/overlay.jpg)
 
@@ -16,11 +16,12 @@ Run it yourself: [http://localhost:8090](http://localhost:8090) after the Docker
 
 ## What you need
 
-1. [Docker](https://docs.docker.com/get-docker/) (Desktop on Mac/Windows, Engine on Linux)
-2. A Gauge.S CSV from the SD card or Wi‑Fi share (**30 MB per file** max)
-3. Optional: an API key if you want Coach (xAI, Groq, Meta Muse, OpenAI, or any OpenAI-compatible host)
+Either of these, plus a Gauge.S CSV from the SD card or Wi‑Fi share (**30 MB per file** max):
 
-That’s it. No database to install. One container.
+- **Docker** — Mac, Windows, or Linux. One container, no database to install. Steps below.
+- **Mac app** — Apple Silicon, in its own window. Python 3.12, Node, and Rust. Steps in [Mac app](#mac-app).
+
+Optional: an API key if you want Coach (xAI, Groq, Meta Muse, OpenAI, or any OpenAI-compatible host).
 
 ---
 
@@ -45,6 +46,25 @@ If the row says **no flying laps**, the log matched a track but never crossed a 
 If the track isn’t in the catalog, the log is still imported as a new track named from its GPS. Open **Track**, confirm the start/finish, rename it, then **Save + reprocess**. File an issue if you want that circuit in the catalog for everyone.
 
 Stop the app with `Ctrl+C` in that terminal, or `docker compose down`. Your library lives in a Docker volume and survives rebuilds.
+
+---
+
+## Mac app
+
+Same analyzer in a window on Apple Silicon. The library is `~/Library/Application Support/Gauge.S Track Analyzer/track.db`, a different file from the Docker volume, so sessions you import here stay on this Mac.
+
+You need Python 3.12 (`brew install python@3.12`), Node, and Rust (`curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh`).
+
+```bash
+./desktop/setup.sh
+source "$HOME/.cargo/env"
+cd desktop && npm run build
+open "desktop/src-tauri/target/release/bundle/macos/Gauge.S Track Analyzer.app"
+```
+
+`setup.sh` creates `api/.venv` when it is missing, then installs the Python and npm packages. `npm run build` writes the `.app` and a `.dmg` under `desktop/src-tauri/target/release/bundle/`. The app launches that venv and serves the UI bundled at build time. Keep this checkout at the path it had when you built; build again if you move it.
+
+While you are changing the UI, `cd desktop && npm run dev` opens a live window. The API is on `127.0.0.1:8000` and the page is `http://localhost:5173`.
 
 ---
 
